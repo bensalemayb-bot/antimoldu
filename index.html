@@ -171,7 +171,8 @@ main.wrap{padding-top:16px;padding-bottom:calc(var(--tabs-h) + 32px + env(safe-a
 .hist li:first-child{border-top:0}
 
 /* notes */
-.note{padding:14px 0;border-top:1px solid var(--line)}
+.note{padding:14px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.task .tt,.prop .t,.card{overflow-wrap:anywhere}
 .note .nt{white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;margin-top:6px}
 .tag{display:inline-block;font-size:13px;padding:2px 8px;border-radius:10px;background:var(--surface-2);color:var(--muted);margin-left:6px}
 
@@ -570,7 +571,14 @@ function obHeader(){
 }
 function langSeg(){
   return el("div", {class:"seg", role:"group", "aria-label":t("settings_lang")}, ["fr","en"].map(function(l){
-    return el("button", {"aria-pressed": String(lang()===l), onclick:function(){ state.lang = l; save(); render(); }, text:l.toUpperCase()});
+    return el("button", {"aria-pressed": String(lang()===l), onclick:function(){
+      if (state.lang !== l){
+        state.lang = l;
+        /* proposals not yet picked are re-fetched in the new language */
+        if (!state.onboardingDone){ PILLARS.forEach(function(p){ if (!ui.choice[p]) delete ui.proposals[p]; }); if (OB_STEPS[ui.obStep] === "tasks") startProposals(); }
+        else if (ui.unlock && !ui.unlock.choice) ui.unlock = null;
+      }
+      save(); render(); }, text:l.toUpperCase()});
   }));
 }
 function obTitle(step){ var tt = obText(step, "title"), st = obText(step, "subtitle"); return [el("h1", {text: tt || step}), (st ? el("p", {class:"muted", style:"margin-top:8px", text:st}) : null)]; }
@@ -1008,9 +1016,10 @@ function toggle(tk, date){
 }
 function regressionCard(){
   var pr = state.pendingRegression, from = rLabel(pr.from), to = rLabel(pr.to);
+  if (ui.regressionText == null && typeof pr.text === "string") ui.regressionText = pr.text;
   if (ui.regressionText == null && !ui.regressionBusy){
     ui.regressionBusy = true;
-    askCoach("regression").then(function(r){ ui.regressionBusy = false; ui.regressionText = r.text; if (state.onboardingDone && ui.tab === "today") { var y = window.scrollY; render(); window.scrollTo(0,y); } });
+    askCoach("regression").then(function(r){ ui.regressionBusy = false; ui.regressionText = r.text; if (state.pendingRegression === pr){ state.pendingRegression = Object.assign({}, pr, {text:r.text}); save(); } if (state.onboardingDone && ui.tab === "today") { var y = window.scrollY; render(); window.scrollTo(0,y); } });
   }
   return el("section", {class:"card warn sect", role:"alert"}, [
     el("h2", {text:t("regression_title")}),
@@ -1090,7 +1099,8 @@ function renderSheet(){
       el("button", {class:"btn primary block", text:t("ame_submit"), onclick:function(){
         if (s.kept == null || s.peace == null){ err.textContent = t("onb_fill_required"); return; }
         var td = today(), sys = state.tasks.filter(function(x){ return x.system; })[0];
-        state.ame = state.ame.concat([{ weekStart:L.isoWeekStart(s.date), date:s.date, kept:s.kept, whyQuit:s.whyQuit.trim(), peace:s.peace, note:s.note.trim() }]);
+        var wk = L.isoWeekStart(s.date);
+        state.ame = state.ame.filter(function(a){ return a.weekStart !== wk; }).concat([{ weekStart:wk, date:s.date, kept:s.kept, whyQuit:s.whyQuit.trim(), peace:s.peace, note:s.note.trim() }]);
         var before = livePts();
         if (sys && !(state.log[s.date] && state.log[s.date][sys.id])) state = L.toggleDone(state, sys.id, s.date, td);
         save(); var dlt = livePts() - before; ui.sheet = null; render();
@@ -1201,10 +1211,10 @@ function viewMentor(){
   function send(mode, message, label){
     if (ui.chatBusy) return;
     ui.chatBusy = true;
+    var pending = askCoach(mode, message); /* body built before the label is pushed: no duplicate in history */
     if (label) state.coach.chat.push({ role:"user", text:label, mode:mode, date:today() });
     save(); render(); scrollChat();
-    var info = null;
-    askCoach(mode, message).then(function(r){
+    pending.then(function(r){
       ui.chatBusy = false;
       state.coach.chat.push({ role:"coach", text:r.text, mode:mode, date:today(), offline:r.offline });
       if (state.coach.chat.length > 60) state.coach.chat = state.coach.chat.slice(-60);
