@@ -347,7 +347,8 @@ oath: {fr, en}
 
 ### 7.5 API serveur (Vercel Functions, Node 20, ESM, `export default async function handler(req,res)`)
 Variables d'environnement :
-- `GEMINI_API_KEY` (obligatoire pour l'IA), `GEMINI_MODEL` (défaut `gemini-2.5-flash`)
+- `GEMINI_API_KEY` (IA principale), `GEMINI_MODEL` (défaut `gemini-flash-lite-latest`) — [DÉCISION] `gemini-2.5-flash` n'est plus ouvert aux nouveaux comptes
+- `GROQ_API_KEY` (secours, optionnel), `GROQ_MODEL` (défaut `openai/gpt-oss-120b`) — [AJOUT] si Gemini échoue (ou est absent), même requête envoyée à Groq (`POST https://api.groq.com/openai/v1/chat/completions`, `Authorization: Bearer`, `reasoning_effort:"low"` pour gpt-oss). Les deux échouent ⇒ 503 `ai_unavailable`.
 - `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, **ou** `KV_REST_API_URL` + `KV_REST_API_TOKEN` (noms injectés par l'intégration Vercel). Accepter les deux.
 
 Gemini : `POST https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, en-tête `x-goog-api-key`, body `{ systemInstruction:{parts:[{text}]}, contents:[{role:"user",parts:[{text}]}], generationConfig:{temperature, maxOutputTokens, responseMimeType?} }`. Pour les modèles `gemini-2.5-flash*`, ajouter `thinkingConfig:{thinkingBudget:0}` dans `generationConfig` (sinon la « réflexion » mange les tokens et la réponse arrive vide ou coupée). Timeout 20 s.

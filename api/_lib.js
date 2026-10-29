@@ -1,4 +1,4 @@
-// Helpers serveur : JSON, corps de requête, Gemini, Upstash, taskValue.
+// Helpers serveur : JSON, corps de requête, IA (Gemini + secours Groq), Upstash, taskValue.
 // Portable : n'utilise que res.statusCode / res.setHeader / res.end (Vercel ou http brut).
 
 export const EASY_MISS_MULTIPLIER = 1.4;
@@ -151,45 +151,82 @@ export function parseJsonLoose(text) {
   return null;
 }
 
-const GEMINI_TIMEOUT_MS = 20000;
+const AI_TIMEOUT_MS = 20000;
+export const DEFAULT_GEMINI_MODEL = "gemini-flash-lite-latest";
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
-export async function callGemini({ system, user, temperature = 0.8, maxOutputTokens = 500, json = false }) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new AiError("no_key");
-  const model = (process.env.GEMINI_MODEL || "gemini-2.5-flash").trim() || "gemini-2.5-flash";
-  const generationConfig = { temperature, maxOutputTokens };
-  if (json) generationConfig.responseMimeType = "application/json";
-  if (model.startsWith("gemini-2.5-flash")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
-  const body = {
-    systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: user }] }],
-    generationConfig,
-  };
+// fetch JSON avec timeout ; toute erreur devient AiError (jamais de trace exposée).
+async function aiFetch(url, headers, body) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), GEMINI_TIMEOUT_MS);
-  let data;
+  const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      },
-    );
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
     if (!r.ok) throw new AiError("http_" + r.status);
-    data = await r.json();
+    return await r.json();
   } catch (e) {
     if (e instanceof AiError) throw e;
     throw new AiError("request_failed");
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function geminiRequest(key, { system, user, temperature, maxOutputTokens, json }) {
+  const model = (process.env.GEMINI_MODEL || "").trim() || DEFAULT_GEMINI_MODEL;
+  const generationConfig = { temperature, maxOutputTokens };
+  if (json) generationConfig.responseMimeType = "application/json";
+  if (model.startsWith("gemini-2.5-flash")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  const data = await aiFetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    { "x-goog-api-key": key },
+    {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig,
+    },
+  );
   const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
   const text = Array.isArray(parts) ? parts.map((p) => (p && typeof p.text === "string" ? p.text : "")).join("").trim() : "";
   if (!text) throw new AiError("empty");
   return text;
+}
+
+// Groq (API compatible OpenAI). Les modèles gpt-oss réfléchissent : marge de tokens en plus.
+async function groqRequest(key, { system, user, temperature, maxOutputTokens }) {
+  const model = (process.env.GROQ_MODEL || "").trim() || DEFAULT_GROQ_MODEL;
+  const body = {
+    model,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    temperature,
+    max_completion_tokens: maxOutputTokens,
+  };
+  if (model.startsWith("openai/gpt-oss")) {
+    body.reasoning_effort = "low";
+    body.max_completion_tokens = maxOutputTokens + 400;
+  }
+  const data = await aiFetch("https://api.groq.com/openai/v1/chat/completions", { Authorization: "Bearer " + key }, body);
+  const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+  const text = msg && typeof msg.content === "string" ? msg.content.trim() : "";
+  if (!text) throw new AiError("empty");
+  return text;
+}
+
+// Gemini en principal, Groq en secours (si GROQ_API_KEY est défini).
+export async function callGemini({ system, user, temperature = 0.8, maxOutputTokens = 500, json = false }) {
+  const opts = { system, user, temperature, maxOutputTokens, json };
+  const gKey = process.env.GEMINI_API_KEY;
+  const qKey = process.env.GROQ_API_KEY;
+  if (!gKey && !qKey) throw new AiError("no_key");
+  if (gKey) {
+    try { return await geminiRequest(gKey, opts); }
+    catch (e) { if (!qKey) throw e; }
+  }
+  return groqRequest(qKey, opts);
 }
 
 function redisConfig() {

@@ -37,7 +37,8 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 5. **Clé IA Gemini** :
    - Va sur https://aistudio.google.com → *Get API key* → *Create API key*.
    - Puis : `vercel env add GEMINI_API_KEY` → colle la clé → coche **Production** (et Preview si tu veux).
-   - Optionnel : `vercel env add GEMINI_MODEL` pour changer de modèle (défaut `gemini-2.5-flash`). Vérifie sur AI Studio que le modèle existe encore dans l'offre gratuite.
+   - Optionnel : `vercel env add GEMINI_MODEL` pour changer de modèle (défaut `gemini-flash-lite-latest`).
+   - **Secours Groq** (recommandé) : clé gratuite sur https://console.groq.com → *API Keys*, puis `vercel env add GROQ_API_KEY`. Si Gemini ne répond pas, Groq (`openai/gpt-oss-120b`, modifiable avec `GROQ_MODEL`) prend le relais.
 6. **Classement (Upstash Redis)** : sur https://vercel.com → ton projet → onglet **Storage** → **Create / Connect** → **Upstash Redis** (offre gratuite) → connecte-le au projet. Les variables `KV_REST_API_URL` / `KV_REST_API_TOKEN` sont ajoutées toutes seules.
 7. **Mise en ligne** : `vercel --prod` → c'est le lien à partager aux potes.
 8. **Vérifier** : ouvre le lien sur ton téléphone, fais l'onboarding, crée un groupe. Le mot du mentor doit être personnalisé (avec ton prénom ou tes tâches), pas un message générique. Un pote rejoint avec le code → vous vous voyez au classement.
@@ -81,7 +82,8 @@ Type every command **in PowerShell, inside the `anti-moldu` folder**.
 5. **Gemini AI key**:
    - Go to https://aistudio.google.com → *Get API key* → *Create API key*.
    - Then: `vercel env add GEMINI_API_KEY` → paste the key → tick **Production**.
-   - Optional: `vercel env add GEMINI_MODEL` to change model (default `gemini-2.5-flash`). Check on AI Studio that it's still on the free tier.
+   - Optional: `vercel env add GEMINI_MODEL` to change model (default `gemini-flash-lite-latest`).
+   - **Groq backup** (recommended): free key at https://console.groq.com → *API Keys*, then `vercel env add GROQ_API_KEY`. If Gemini fails, Groq (`openai/gpt-oss-120b`, change with `GROQ_MODEL`) takes over.
 6. **Leaderboard (Upstash Redis)**: on https://vercel.com → your project → **Storage** tab → **Create / Connect** → **Upstash Redis** (free plan) → connect to the project. `KV_REST_API_URL` / `KV_REST_API_TOKEN` are added automatically.
 7. **Go live**: `vercel --prod` → share this link with your friends.
 8. **Check**: open the link on your phone, complete onboarding, create a group. The mentor's line should be personal (your name or tasks), not generic. A friend joins with the code → you see each other on the leaderboard.

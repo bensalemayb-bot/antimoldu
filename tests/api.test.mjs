@@ -9,7 +9,7 @@ const tasks = (await import("../api/tasks.js")).default;
 const state = (await import("../api/state.js")).default;
 
 const ENV_KEYS = [
-  "GEMINI_API_KEY", "GEMINI_MODEL",
+  "GEMINI_API_KEY", "GEMINI_MODEL", "GROQ_API_KEY", "GROQ_MODEL",
   "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN",
   "KV_REST_API_URL", "KV_REST_API_TOKEN", "AI_DAILY_LIMIT",
 ];
@@ -21,6 +21,8 @@ const REDIS_TOKEN = "redis-SECRET-TOKEN-456";
 let geminiCalls = [];
 let redisCalls = [];
 let geminiReply = null; // fonction (body) => {status, json|text}
+let groqCalls = [];
+let groqReply = null;
 let store = new Map(); // key -> Map(field -> value)
 let counters = new Map(); // key -> nombre (INCR)
 
@@ -61,6 +63,11 @@ function fakeFetch(url, init = {}) {
     if (r.text !== undefined) return Promise.resolve(new Response(r.text, { status: r.status }));
     return Promise.resolve(jsonResponse(r.status, r.json));
   }
+  if (u.startsWith("https://api.groq.com/")) {
+    groqCalls.push({ url: u, headers: init.headers, body });
+    const r = groqReply ? groqReply(body) : { status: 500, json: { error: "x" } };
+    return Promise.resolve(jsonResponse(r.status, r.json));
+  }
   if (u.startsWith("https://redis.test")) {
     redisCalls.push({ url: u, headers: init.headers, body });
     const auth = (init.headers && (init.headers.Authorization || init.headers.authorization)) || "";
@@ -80,7 +87,7 @@ function geminiText(text) {
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
-  geminiCalls = []; redisCalls = []; geminiReply = null; store = new Map(); counters = new Map();
+  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map();
   globalThis.fetch = fakeFetch;
 });
 afterEach(() => {
@@ -174,6 +181,7 @@ const coachBody = (over = {}) => ({
 
 test("coach: valid reply => 200 {text}, thinkingBudget 0, key in header only", async () => {
   withGemini();
+  process.env.GEMINI_MODEL = "gemini-2.5-flash";
   geminiReply = geminiText("Debout. Tes pompes t'attendent.");
   const r = await call(coach, { body: coachBody() });
   assert.equal(r.status, 200);
@@ -188,6 +196,71 @@ test("coach: valid reply => 200 {text}, thinkingBudget 0, key in header only", a
   const userText = g.body.contents[0].parts[0].text;
   assert.match(userText, /<context>[\s\S]*Sam[\s\S]*<\/context>/);
   assertClean(r);
+});
+
+test("coach: default model is gemini-flash-lite-latest", async () => {
+  withGemini();
+  geminiReply = geminiText("ok");
+  const r = await call(coach, { body: coachBody() });
+  assert.equal(r.status, 200);
+  assert.match(geminiCalls[0].url, /models\/gemini-flash-lite-latest:generateContent$/);
+  assert.equal(geminiCalls[0].body.generationConfig.thinkingConfig, undefined);
+});
+
+function groqText(text) {
+  return () => ({ status: 200, json: { choices: [{ message: { content: text } }] } });
+}
+const GROQ_SECRET = "gsk-test-GROQ-SECRET-789";
+
+test("coach: Gemini fails + GROQ_API_KEY => Groq answers, key in header only", async () => {
+  withGemini();
+  process.env.GROQ_API_KEY = GROQ_SECRET;
+  geminiReply = () => ({ status: 402, json: { error: { message: "depleted" } } });
+  groqReply = groqText("Bouge-toi.");
+  const r = await call(coach, { body: coachBody() });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.text, "Bouge-toi.");
+  assert.equal(geminiCalls.length, 1);
+  const q = groqCalls[0];
+  assert.equal(q.headers.Authorization, "Bearer " + GROQ_SECRET);
+  assert.equal(q.body.model, "openai/gpt-oss-120b");
+  assert.equal(q.body.messages[0].role, "system");
+  assert.match(q.body.messages[1].content, /<context>[\s\S]*Sam/);
+  assert.ok(!JSON.stringify(r.json).includes(GROQ_SECRET));
+});
+
+test("coach: Gemini ok => Groq never called", async () => {
+  withGemini();
+  process.env.GROQ_API_KEY = GROQ_SECRET;
+  geminiReply = geminiText("ok");
+  groqReply = groqText("non");
+  const r = await call(coach, { body: coachBody() });
+  assert.equal(r.json.text, "ok");
+  assert.equal(groqCalls.length, 0);
+});
+
+test("coach: only GROQ_API_KEY => Groq used; both fail => 503", async () => {
+  process.env.GROQ_API_KEY = GROQ_SECRET;
+  groqReply = groqText("seul");
+  let r = await call(coach, { body: coachBody() });
+  assert.equal(r.json.text, "seul");
+  assert.equal(geminiCalls.length, 0);
+  withGemini();
+  geminiReply = () => ({ status: 500, json: {} });
+  groqReply = () => ({ status: 429, json: { error: { message: "rate " + GROQ_SECRET } } });
+  r = await call(coach, { body: coachBody() });
+  assert.equal(r.status, 503);
+  assert.deepEqual(r.json, { error: "ai_unavailable" });
+});
+
+test("tasks: Groq fallback returns parsable tasks", async () => {
+  withGemini();
+  process.env.GROQ_API_KEY = GROQ_SECRET;
+  geminiReply = () => ({ status: 500, json: {} });
+  groqReply = groqText("```json\n" + JSON.stringify(goodTasks) + "\n```");
+  const r = await call(tasks, { body: proposeBody() });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.tasks.length, 3);
 });
 
 test("coach: other model => no thinkingConfig; GEMINI_MODEL respected", async () => {
