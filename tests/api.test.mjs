@@ -11,7 +11,7 @@ const state = (await import("../api/state.js")).default;
 const ENV_KEYS = [
   "GEMINI_API_KEY", "GEMINI_MODEL",
   "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN",
-  "KV_REST_API_URL", "KV_REST_API_TOKEN",
+  "KV_REST_API_URL", "KV_REST_API_TOKEN", "AI_DAILY_LIMIT",
 ];
 const realFetch = globalThis.fetch;
 const SECRET = "sk-test-SECRET-KEY-123";
@@ -22,6 +22,7 @@ let geminiCalls = [];
 let redisCalls = [];
 let geminiReply = null; // fonction (body) => {status, json|text}
 let store = new Map(); // key -> Map(field -> value)
+let counters = new Map(); // key -> nombre (INCR)
 
 function redisExec(cmd) {
   const [op, key, ...args] = cmd;
@@ -42,6 +43,7 @@ function redisExec(cmd) {
     case "HEXISTS": return h.has(args[0]) ? 1 : 0;
     case "HDEL": { const had = h.delete(args[0]); return had ? 1 : 0; }
     case "EXPIRE": return 1;
+    case "INCR": { const n = (counters.get(key) || 0) + 1; counters.set(key, n); return n; }
     default: throw new Error("unsupported " + op);
   }
 }
@@ -78,7 +80,7 @@ function geminiText(text) {
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
-  geminiCalls = []; redisCalls = []; geminiReply = null; store = new Map();
+  geminiCalls = []; redisCalls = []; geminiReply = null; store = new Map(); counters = new Map();
   globalThis.fetch = fakeFetch;
 });
 afterEach(() => {
@@ -420,12 +422,16 @@ test("state: POST then GET returns member, sorted by rank then points", async ()
   assert.deepEqual(r.json, { ok: true });
   await call(state, { body: { group: "ABC123", id: "u2", profile: profile({ name: "Léa", rankIndex: 3, points: 2000 }) } });
   await call(state, { body: { group: "ABC123", id: "u3", profile: profile({ name: "Max", rankIndex: 5, points: 10 }) } });
-  r = await call(state, { method: "GET", url: "/api/state?group=ABC123" });
+  r = await call(state, { method: "GET", url: "/api/state?group=ABC123&me=u1" });
   assert.equal(r.status, 200);
   assert.equal(r.headers["cache-control"], "no-store");
-  assert.deepEqual(r.json.members.map((m) => m.id), ["u3", "u2", "u1"]);
-  const m = r.json.members.find((x) => x.id === "u1");
-  assert.deepEqual(Object.keys(m).sort(), ["discipline", "id", "name", "points", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt"]);
+  assert.deepEqual(r.json.members.map((m) => m.name), ["Max", "Léa", "Sam"]);
+  const m = r.json.members.find((x) => x.me === true);
+  assert.deepEqual(Object.keys(m).sort(), ["discipline", "me", "name", "points", "pub", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt"]);
+  assert.equal(r.json.members.filter((x) => x.me).length, 1);
+  assert.match(m.pub, /^[0-9a-f]{12}$/);
+  // les identifiants (clés d'écriture) ne sortent jamais
+  assert.ok(!JSON.stringify(r.json).includes('"u1"') && !JSON.stringify(r.json).includes('"u2"') && !JSON.stringify(r.json).includes('"u3"'));
   assert.equal(m.name, "Sam");
   assert.ok(typeof m.updatedAt === "string" && m.updatedAt.length > 0);
   // clé de hash
@@ -533,4 +539,50 @@ test("state: POST body as stream works (raw http server)", async () => {
   withUpstash();
   const r = await call(state, { body: { group: "ABC123", id: "u1", profile: profile() }, bodyMode: "stream" });
   assert.equal(r.status, 200);
+});
+
+// ================= limites d'appels =================
+test("rate limit: state 301st call in the hour => 429 rate_limited", async () => {
+  withUpstash();
+  let r;
+  for (let i = 0; i < 300; i++) {
+    r = await call(state, { method: "GET", url: "/api/state?group=ABC123" });
+    assert.equal(r.status, 200);
+  }
+  r = await call(state, { method: "GET", url: "/api/state?group=ABC123" });
+  assert.equal(r.status, 429);
+  assert.deepEqual(r.json, { error: "rate_limited" });
+});
+
+test("rate limit: coach 41st call => 429, Gemini not called", async () => {
+  withUpstash(); withGemini();
+  geminiReply = geminiText("Debout.");
+  for (let i = 0; i < 40; i++) {
+    const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
+    assert.equal(r.status, 200);
+  }
+  const before = geminiCalls.length;
+  const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
+  assert.equal(r.status, 429);
+  assert.equal(geminiCalls.length, before);
+});
+
+test("AI daily quota: AI_DAILY_LIMIT reached => 429 for coach and tasks", async () => {
+  withUpstash(); withGemini();
+  process.env.AI_DAILY_LIMIT = "2";
+  geminiReply = geminiText("Debout.");
+  assert.equal((await call(coach, { body: { lang: "fr", mode: "boost", context: {} } })).status, 200);
+  assert.equal((await call(coach, { body: { lang: "fr", mode: "boost", context: {} } })).status, 200);
+  assert.equal((await call(coach, { body: { lang: "fr", mode: "boost", context: {} } })).status, 429);
+  const r = await call(tasks, { body: { mode: "value", lang: "fr", title: "Lire 10 pages" } });
+  assert.equal(r.status, 429);
+});
+
+test("rate limit: no storage configured => no limit (app keeps working)", async () => {
+  withGemini();
+  geminiReply = geminiText("Debout.");
+  for (let i = 0; i < 45; i++) {
+    const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
+    assert.equal(r.status, 200);
+  }
 });

@@ -1,6 +1,9 @@
-// GET /api/state?group=CODE  => { members:[...] }  (trié rang puis points)
+// GET /api/state?group=CODE&me=ID  => { members:[...] }  (trié rang puis points)
+//   Les identifiants ne sortent jamais : chaque membre a un repère anonyme "pub" et "me" = true pour l'appelant.
+//   L'identifiant (UUID aléatoire, connu seulement de son téléphone) sert donc de clé d'écriture.
 // POST /api/state { group, id, profile } => { ok:true }   (liste blanche stricte)
-import { allowMethods, readBody, sendJson, handleError, queryParam, redis, clean, BadRequest } from "./_lib.js";
+import { createHash } from "node:crypto";
+import { allowMethods, readBody, sendJson, handleError, queryParam, redis, clean, BadRequest, rateLimit } from "./_lib.js";
 
 const GROUP_RE = /^[A-Z0-9]{6}$/;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -34,9 +37,18 @@ export function sanitizeMember(id, p, updatedAt) {
   };
 }
 
+const pubId = (group, id) => createHash("sha256").update(group + ":" + id).digest("hex").slice(0, 12);
+
+// Version publique d'un membre : sans identifiant.
+function publicMember(group, m, meId) {
+  const { id, ...rest } = m;
+  return { pub: pubId(group, id), me: id === meId, ...rest };
+}
+
 async function getGroup(req, res) {
   const group = queryParam(req, "group");
   if (typeof group !== "string" || !GROUP_RE.test(group)) throw new BadRequest("bad_group");
+  const me = queryParam(req, "me");
   const flat = await redis(["HGETALL", hashKey(group)]);
   const members = [];
   if (Array.isArray(flat)) {
@@ -50,7 +62,7 @@ async function getGroup(req, res) {
     }
   }
   members.sort((a, b) => b.rankIndex - a.rankIndex || b.points - a.points);
-  return sendJson(res, 200, { members });
+  return sendJson(res, 200, { members: members.map((m) => publicMember(group, m, typeof me === "string" ? me : null)) });
 }
 
 async function postMember(req, res) {
@@ -73,6 +85,7 @@ async function postMember(req, res) {
 export default async function handler(req, res) {
   try {
     if (!allowMethods(req, res, ["GET", "POST"])) return;
+    await rateLimit(req, "state", 300);
     if (req.method === "GET") return await getGroup(req, res);
     return await postMember(req, res);
   } catch (err) {

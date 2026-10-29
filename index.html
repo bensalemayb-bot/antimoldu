@@ -1268,7 +1268,7 @@ function refreshGroup(skipPush){
   if (!state.group || !state.onboardingDone) return;
   var code = state.group.code;
   if (!skipPush){ ui.group.status = "loading"; pushGroup(true); return; }
-  api("/api/state?group=" + encodeURIComponent(code), null, 25000).then(function(r){
+  api("/api/state?group=" + encodeURIComponent(code) + "&me=" + encodeURIComponent(state.user.id), null, 25000).then(function(r){
     if (!state.group || state.group.code !== code) return;
     if (r && Array.isArray(r.members)){ ui.group = { status:"ok", members: r.members.filter(isObj) }; }
     else ui.group = { status:"offline", members:[] };
@@ -1283,10 +1283,10 @@ function viewGroup(){
     box.appendChild(groupJoinUI(function(){ render(); refreshGroup(); }));
     return box;
   }
-  var me = myProfile(); me.id = state.user.id;
+  var me = myProfile(); me.me = true;
   var members = ui.group.status === "ok" ? ui.group.members.slice() : [];
-  if (!members.some(function(m){ return m.id === me.id; })) members.push(me);
-  else members = members.map(function(m){ return m.id === me.id ? me : m; });
+  if (!members.some(function(m){ return m.me === true; })) members.push(me);
+  else members = members.map(function(m){ return m.me === true ? me : m; });
   members.sort(function(a, b){ return (Number(b.rankIndex)||0) - (Number(a.rankIndex)||0) || (Number(b.points)||0) - (Number(a.points)||0); });
   box.appendChild(el("div", {class:"row", style:"justify-content:space-between"}, [
     el("div", {}, [el("p", {class:"small muted", text:t("group_code")}), el("div", {class:"code", style:"font-size:32px", text:state.group.code})]),
@@ -1297,7 +1297,7 @@ function viewGroup(){
   if (ui.group.status === "offline") box.appendChild(el("div", {class:"banner", style:"margin-top:12px", role:"status", text:t("group_unavailable")}));
   var list = el("section", {style:"margin-top:12px"});
   members.forEach(function(m){
-    var ri = clamp(Math.round(m.rankIndex)||0, 0, 12), info = L.rankInfo(ri), isMe = m.id === me.id;
+    var ri = clamp(Math.round(m.rankIndex)||0, 0, 12), info = L.rankInfo(ri), isMe = m.me === true;
     var due = Math.max(0, Number(m.todayDue)||0), done = clamp(Number(m.todayDone)||0, 0, due || 0);
     list.appendChild(el("div", {class:"member" + (isMe ? " me" : "")}, [
       el("div", {class:"ml", style:"color:" + rankColor(ri), text:rLabel(ri)}),

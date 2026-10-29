@@ -45,6 +45,7 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 ### Bon à savoir
 - Pas de compte : tout est stocké sur ton téléphone. Change de téléphone ? **Réglages → Exporter**, puis Importer sur le nouveau.
 - Ce que le groupe reçoit : prénom, rang, points, discipline, série, « x/y aujourd'hui ». Rien d'autre.
+- Protection : le classement ne montre jamais les identifiants (personne ne peut modifier la ligne d'un autre), et le serveur limite les appels (40 messages au mentor par heure et par connexion, 1000 appels IA par jour au total — modifiable avec `vercel env add AI_DAILY_LIMIT`). Au-delà, l'app passe en mode secours.
 - Ce que l'IA reçoit : ton profil, tes tâches, tes 5 dernières notes, pour te répondre. Offre gratuite de Gemini : Google peut utiliser ces données pour améliorer ses modèles.
 
 ---
@@ -88,4 +89,5 @@ Type every command **in PowerShell, inside the `anti-moldu` folder**.
 ### Good to know
 - No accounts: everything lives on your phone. New phone? **Settings → Export**, then Import.
 - What the group receives: first name, rank, points, discipline, streak, "x/y today". Nothing else.
+- Protection: the leaderboard never exposes member ids (nobody can overwrite someone else's row), and the server rate-limits calls (40 mentor messages per hour per connection, 1000 AI calls per day overall — change with `vercel env add AI_DAILY_LIMIT`). Beyond that, the app falls back to offline mode.
 - What the AI receives: your profile, tasks and last 5 notes, to answer you. On Gemini's free tier, Google may use this data to improve its models.

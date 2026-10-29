@@ -1,5 +1,5 @@
 // POST /api/coach — le Mentor. Body { lang, mode, context, chat?, message? } => { text }
-import { allowMethods, readBody, sendJson, handleError, callGemini, clean, cleanMultiline, BadRequest } from "./_lib.js";
+import { allowMethods, readBody, sendJson, handleError, callGemini, clean, cleanMultiline, BadRequest, rateLimit, aiDailyQuota } from "./_lib.js";
 
 export const MODES = ["morning", "boost", "bilan", "avis", "regression", "chat"];
 const MAX_CONTEXT = 12000;
@@ -91,6 +91,7 @@ function historyText(chat) {
 export default async function handler(req, res) {
   try {
     if (!allowMethods(req, res, ["POST"])) return;
+    await rateLimit(req, "coach", 40);
     const body = await readBody(req);
     const mode = body.mode;
     if (!MODES.includes(mode)) throw new BadRequest("bad_mode");
@@ -104,6 +105,7 @@ export default async function handler(req, res) {
     if (hist) user += `\n<history>\n${hist}\n</history>`;
     if (message) user += `\n<message>\n${neutralizeTags(message)}\n</message>`;
 
+    await aiDailyQuota();
     const raw = await callGemini({ system, user, temperature: TEMPERATURE[mode], maxOutputTokens: TOKENS[mode] });
     const text = cleanMultiline(raw, 4000);
     if (!text) return sendJson(res, 503, { error: "ai_unavailable" });

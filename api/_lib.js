@@ -10,6 +10,7 @@ export class StorageError extends Error {}
 export class BadRequest extends Error {
   constructor(code) { super(code); this.code = code; }
 }
+export class RateLimited extends Error {}
 
 const clampNum = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 
@@ -121,6 +122,7 @@ export function queryParam(req, name) {
 // Gère les erreurs connues sans jamais exposer de trace.
 export function handleError(res, err) {
   if (err instanceof BadRequest) return sendJson(res, 400, { error: err.code });
+  if (err instanceof RateLimited) return sendJson(res, 429, { error: "rate_limited" });
   if (err instanceof AiError) return sendJson(res, 503, { error: "ai_unavailable" });
   if (err instanceof StorageError) return sendJson(res, 503, { error: "storage_unavailable" });
   return sendJson(res, 500, { error: "server_error" });
@@ -221,4 +223,37 @@ export async function redis(cmdArray) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---------- Limites d'appels (Upstash). Si le stockage est absent ou en panne, on laisse passer. ----------
+function clientIp(req) {
+  const h = (req && req.headers) || {};
+  const xf = Array.isArray(h["x-forwarded-for"]) ? h["x-forwarded-for"][0] : String(h["x-forwarded-for"] || "");
+  const ip = xf.split(",")[0].trim() || String(h["x-real-ip"] || "") || (req.socket && req.socket.remoteAddress) || "";
+  return ip.replace(/[^0-9a-fA-F:.]/g, "").slice(0, 45) || "unknown";
+}
+
+async function bump(key, ttlSec) {
+  const n = Number(await redis(["INCR", key]));
+  if (n === 1) await redis(["EXPIRE", key, ttlSec]);
+  return n;
+}
+
+// Par adresse IP, sur une fenêtre fixe.
+export async function rateLimit(req, bucket, limit, windowSec = 3600) {
+  if (!storageConfigured()) return;
+  let n;
+  try { n = await bump(`am:rl:${bucket}:${clientIp(req)}:${Math.floor(Date.now() / 1000 / windowSec)}`, windowSec); }
+  catch { return; }
+  if (n > limit) throw new RateLimited();
+}
+
+// Plafond global d'appels Gemini par jour (AI_DAILY_LIMIT, défaut 1000) pour protéger le quota gratuit.
+export async function aiDailyQuota() {
+  if (!storageConfigured()) return;
+  const cap = Number(process.env.AI_DAILY_LIMIT) > 0 ? Number(process.env.AI_DAILY_LIMIT) : 1000;
+  let n;
+  try { n = await bump("am:ai:" + new Date().toISOString().slice(0, 10), 172800); }
+  catch { return; }
+  if (n > cap) throw new RateLimited();
 }
