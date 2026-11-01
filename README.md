@@ -14,7 +14,7 @@ Un mentor qui parle cash, un carnet de notes et des tâches qui te rapportent (o
 | `index.html` | L'app (écrans, styles, code) |
 | `content.js` | Tous les textes FR/EN, le diagnostic, les tâches, les boosts |
 | `logic.js` | Les règles : rangs, points, discipline |
-| `api/` | Le serveur : mentor IA (Gemini/Groq), propositions de tâches, classement, chat de groupe, comptes |
+| `api/` | Le serveur : mentor IA (Gemini/Groq), propositions de tâches, classement, chat de groupe, gestion du groupe (admin), comptes |
 | `tests/` | Les tests (`node --test`) |
 | `SPEC.md` | La spécification complète |
 
@@ -59,7 +59,7 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 | `index.html` | The app (screens, styles, code) |
 | `content.js` | All FR/EN copy, diagnostic, task library, boosts |
 | `logic.js` | Rules: ranks, points, discipline |
-| `api/` | Server: AI mentor (Gemini/Groq), task suggestions, leaderboard, group chat, accounts |
+| `api/` | Server: AI mentor (Gemini/Groq), task suggestions, leaderboard, group chat, group admin, accounts |
 | `tests/` | Tests (`node --test`) |
 | `SPEC.md` | Full specification |
 

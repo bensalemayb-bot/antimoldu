@@ -1,4 +1,5 @@
-// GET /api/state?group=CODE&me=ID  => { members:[...] }  (trié rang puis points)
+// GET /api/state?group=CODE&me=ID  => { members:[...], isOwner }  (trié rang puis points)
+//   ou { kicked:true } si l'appelant a été exclu, { movedTo } si le groupe a changé de code.
 //   Les identifiants ne sortent jamais : chaque membre a un repère anonyme "pub" et "me" = true pour l'appelant.
 //   L'identifiant (UUID aléatoire, connu seulement de son téléphone) sert donc de clé d'écriture.
 // POST /api/state { group, id, profile } => { ok:true }   (liste blanche stricte)
@@ -7,8 +8,11 @@ import { allowMethods, readBody, sendJson, handleError, queryParam, redis, clean
 
 export const GROUP_RE = /^[A-Z0-9]{6}$/;
 export const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const MAX_MEMBERS = 50;
+export const MAX_MEMBERS = 50;
 export const hashKey = (group) => "am:g:" + group;
+export const ownerKey = (group) => "am:go:" + group;   // identifiant du créateur
+export const bannedKey = (group) => "am:gb:" + group;  // identifiants exclus (ensemble)
+export const movedKey = (group) => "am:gr:" + group;   // ancien code -> nouveau code
 
 function int(x, lo, hi, dflt) {
   const n = Number(x);
@@ -63,11 +67,35 @@ function publicMember(group, m, meId) {
   return { pub: pubId(group, id), me: id === meId, ...rest };
 }
 
+// Groupe renommé : on suit les redirections, mais seulement pour qui est membre du nouveau groupe.
+export async function movedFor(group, id) {
+  let code = group;
+  let found = null;
+  for (let hop = 0; hop < 5; hop++) {
+    const next = await redis(["GET", movedKey(code)]);
+    if (typeof next !== "string" || !GROUP_RE.test(next)) break;
+    if (Number(await redis(["HEXISTS", hashKey(next), id])) === 1) found = next;
+    code = next;
+  }
+  return found;
+}
+
+export async function isBanned(group, id) {
+  return Number(await redis(["SISMEMBER", bannedKey(group), id])) === 1;
+}
+
 async function getGroup(req, res) {
   const group = queryParam(req, "group");
   if (typeof group !== "string" || !GROUP_RE.test(group)) throw new BadRequest("bad_group");
-  const me = queryParam(req, "me");
+  let me = queryParam(req, "me");
+  if (typeof me !== "string" || !ID_RE.test(me)) me = null;
+  if (me && await isBanned(group, me)) return sendJson(res, 200, { kicked: true, members: [] });
   const flat = await redis(["HGETALL", hashKey(group)]);
+  if (me && !(Array.isArray(flat) && flat.includes(me))) {
+    const moved = await movedFor(group, me);
+    if (moved) return sendJson(res, 200, { movedTo: moved, members: [] });
+  }
+  const owner = await redis(["GET", ownerKey(group)]);
   const members = [];
   if (Array.isArray(flat)) {
     for (let i = 0; i + 1 < flat.length; i += 2) {
@@ -80,7 +108,10 @@ async function getGroup(req, res) {
     }
   }
   members.sort((a, b) => b.rankIndex - a.rankIndex || b.points - a.points);
-  return sendJson(res, 200, { members: members.map((m) => publicMember(group, m, typeof me === "string" ? me : null)) });
+  return sendJson(res, 200, {
+    members: members.map((m) => ({ ...publicMember(group, m, me), owner: m.id === owner })),
+    isOwner: me !== null && me === owner,
+  });
 }
 
 async function postMember(req, res) {
@@ -90,9 +121,16 @@ async function postMember(req, res) {
   const id = body.id;
   if (typeof id !== "string" || !ID_RE.test(id)) throw new BadRequest("bad_id");
   const key = hashKey(group);
+  if (await isBanned(group, id)) return sendJson(res, 200, { kicked: true });
   const exists = Number(await redis(["HEXISTS", key, id])) === 1;
   if (!exists) {
     const count = Number(await redis(["HLEN", key]));
+    // Un groupe n'existe que s'il a été créé (propriétaire) ou s'il a déjà des membres.
+    if (count === 0 && (await redis(["GET", ownerKey(group)])) === null) {
+      const moved = await movedFor(group, id);
+      if (moved) return sendJson(res, 200, { movedTo: moved });
+      throw new BadRequest("group_not_found");
+    }
     if (count >= MAX_MEMBERS) throw new BadRequest("group_full");
   }
   const member = sanitizeMember(id, body.profile, new Date().toISOString());

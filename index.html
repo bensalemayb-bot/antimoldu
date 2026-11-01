@@ -846,17 +846,49 @@ function groupJoinUI(after){
       el("p", {class:"small muted", text:t("group_code")}),
       el("div", {class:"code", text:g.code}),
       el("div", {class:"row wrap-ok", style:"margin-top:10px"}, [
-        el("button", {class:"btn sm", onclick:function(){ copyText(g.code); }, text:t("group_copy")}),
-        el("button", {class:"btn sm ghost", onclick:function(){ state.group = null; save(); ui.group = {status:"idle", members:[]}; ui.gchat = {status:"idle", messages:[]}; gchatDraft = ""; after(); }, text:t("group_leave")})
+        el("button", {class:"btn sm", onclick:inviteToGroup, text:t("group_invite")}),
+        el("button", {class:"btn sm ghost", onclick:function(){ leaveGroup(); after(); }, text:t("group_leave")})
       ])
     ]));
     return box;
   }
-  var codeIn = el("input", {class:"in", maxlength:"6", autocapitalize:"characters", placeholder:"ABC123", "aria-label":t("group_code_placeholder"), style:"text-transform:uppercase;letter-spacing:.15em;font-weight:700"});
-  var err = el("p", {class:"err"});
-  function join(){ var c = codeIn.value.toUpperCase().replace(/[^A-Z0-9]/g,""); if (!/^[A-Z0-9]{6}$/.test(c)){ err.textContent = t("group_code_invalid"); return; } state.group = {code:c}; save(); ui.gchat = {status:"idle", messages:[]}; pushGroup(true); fetchGroupChat(); after(); }
+  var codeIn = el("input", {class:"in", maxlength:"6", value: inviteCode || "", autocapitalize:"characters", placeholder:"ABC123", "aria-label":t("group_code_placeholder"), style:"text-transform:uppercase;letter-spacing:.15em;font-weight:700"});
+  var err = el("p", {class:"err", role:"alert"});
+  var busy = false;
+  function enter(code, msg){
+    state.group = {code:code}; inviteCode = null; save(); resetGroupUI();
+    toast("", msg);
+    pushGroup(true).then(fetchGroupChat);
+    after();
+  }
+  function join(){
+    var c = codeIn.value.toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if (!/^[A-Z0-9]{6}$/.test(c)){ err.textContent = t("group_code_invalid"); return; }
+    if (busy) return;
+    busy = true; err.textContent = t("loading");
+    apiFull("/api/group", { action:"check", group:c, id: state.user.id }).then(function(r){
+      busy = false;
+      var j = r.json || {};
+      if (r.status === 200 && typeof j.movedTo === "string") return enter(j.movedTo, t("group_joined", {code:j.movedTo}));
+      if (r.status === 200 && j.kicked === true){ err.textContent = t("group_err_kicked"); return; }
+      if (r.status === 200 && j.ok) return enter(c, t("group_joined", {code:c}));
+      err.textContent = t(j.error === "group_not_found" ? "group_err_not_found" : j.error === "group_full" ? "group_err_full" : "group_err_offline");
+    });
+  }
+  function create(tries){
+    if (busy) return;
+    busy = true; err.textContent = t("loading");
+    var c = genCode();
+    apiFull("/api/group", { action:"create", group:c, id: state.user.id }).then(function(r){
+      busy = false;
+      if (r.status === 200 && r.json && r.json.ok) return enter(c, t("group_created", {code:c}));
+      if (r.json && r.json.error === "group_exists" && tries < 3) return create(tries + 1);
+      err.textContent = t("group_err_offline");
+    });
+  }
   codeIn.addEventListener("keydown", function(e){ if (e.key === "Enter") join(); });
-  box.appendChild(el("button", {class:"btn primary block", onclick:function(){ state.group = {code:genCode()}; save(); ui.gchat = {status:"idle", messages:[]}; pushGroup(true); fetchGroupChat(); after(); }, text:t("group_create")}));
+  if (inviteCode) box.appendChild(el("p", {class:"card accent", text:t("group_invited", {code:inviteCode})}));
+  box.appendChild(el("button", {class:"btn primary block", onclick:function(){ create(0); }, text:t("group_create")}));
   box.appendChild(el("div", {class:"row"}, [el("div", {class:"grow"}, codeIn), el("button", {class:"btn", onclick:join, text:t("group_join_btn")})]));
   box.appendChild(err);
   return box;
@@ -1302,7 +1334,35 @@ function myProfile(){
 function pushGroup(thenFetch){
   if (!state.group || !state.onboardingDone) return Promise.resolve(null);
   var body = { group: state.group.code, id: state.user.id, profile: myProfile() };
-  return api("/api/state", body, 25000).then(function(r){ if (thenFetch) refreshGroup(true); return r; });
+  return api("/api/state", body, 25000).then(function(r){ if (handleGroupSignal(r)) return r; if (thenFetch) refreshGroup(true); return r; });
+}
+function resetGroupUI(){ ui.group = {status:"idle", members:[]}; ui.gchat = {status:"idle", messages:[]}; ui.groupOpen = null; ui.groupAdmin = null; ui.kickArm = null; gchatDraft = ""; }
+// Réponses spéciales du serveur : le groupe a changé de code (on suit), ou on a été exclu.
+function handleGroupSignal(r){
+  if (!r || !state.group) return false;
+  if (typeof r.movedTo === "string" && /^[A-Z0-9]{6}$/.test(r.movedTo)){
+    state.group = {code:r.movedTo}; save(); resetGroupUI();
+    toast("", t("group_code_changed", {code:r.movedTo}));
+    pushGroup(true).then(fetchGroupChat);
+    return true;
+  }
+  if (r.kicked === true){
+    var c = state.group.code;
+    state.group = null; save(); resetGroupUI();
+    toast("", t("group_kicked", {code:c}));
+    if (ui.tab === "group") render();
+    return true;
+  }
+  return false;
+}
+// Re-rend la page en gardant le champ en cours de saisie (chat, nouveau code).
+function renderKeepFocus(){
+  var a = document.activeElement, id = a && a.id, s = null, e = null;
+  try { s = a.selectionStart; e = a.selectionEnd; } catch(x){}
+  render();
+  if (!id) return;
+  var n = document.getElementById(id);
+  if (n){ n.focus(); try { if (s != null) n.setSelectionRange(s, e); } catch(x){} }
 }
 function schedulePush(){ if (!state.group) return; clearTimeout(pushTimer); pushTimer = setTimeout(function(){ pushGroup(ui.tab === "group"); }, 2000); }
 function refreshGroup(skipPush){
@@ -1311,9 +1371,10 @@ function refreshGroup(skipPush){
   if (!skipPush){ ui.group.status = "loading"; pushGroup(true); return; }
   api("/api/state?group=" + encodeURIComponent(code) + "&me=" + encodeURIComponent(state.user.id), null, 25000).then(function(r){
     if (!state.group || state.group.code !== code) return;
-    if (r && Array.isArray(r.members)){ ui.group = { status:"ok", members: r.members.filter(isObj) }; }
-    else ui.group = { status:"offline", members:[] };
-    if (ui.tab === "group") render();
+    if (handleGroupSignal(r)) return;
+    if (r && Array.isArray(r.members)){ ui.group = { status:"ok", members: r.members.filter(isObj), isOwner: r.isOwner === true }; }
+    else ui.group = { status:"offline", members:[], isOwner: ui.group.isOwner };
+    if (ui.tab === "group") renderKeepFocus();
   });
 }
 function viewGroup(){
@@ -1324,14 +1385,18 @@ function viewGroup(){
     box.appendChild(groupJoinUI(function(){ render(); refreshGroup(); }));
     return box;
   }
-  var me = myProfile(); me.me = true;
+  var me = myProfile(); me.me = true; me.owner = ui.group.isOwner === true;
   var members = ui.group.status === "ok" ? ui.group.members.slice() : [];
+  if (inviteCode && inviteCode !== state.group.code) box.appendChild(el("p", {class:"card accent", style:"margin-bottom:12px", text:t("group_invited_other", {code:inviteCode})}));
   if (!members.some(function(m){ return m.me === true; })) members.push(me);
   else members = members.map(function(m){ return m.me === true ? me : m; });
   members.sort(function(a, b){ return (Number(b.rankIndex)||0) - (Number(a.rankIndex)||0) || (Number(b.points)||0) - (Number(a.points)||0); });
   box.appendChild(el("div", {class:"row", style:"justify-content:space-between"}, [
     el("div", {}, [el("p", {class:"small muted", text:t("group_code")}), el("div", {class:"code", style:"font-size:32px", text:state.group.code})]),
-    el("button", {class:"btn sm", onclick:function(){ copyText(state.group.code); }, text:t("group_copy")})
+    el("div", {class:"row"}, [
+      el("button", {class:"btn sm primary", onclick:inviteToGroup, text:t("group_invite")}),
+      el("button", {class:"btn sm", onclick:function(){ copyText(state.group.code); }, text:t("group_copy")})
+    ])
   ]));
   box.appendChild(el("p", {class:"small muted", style:"margin-top:6px", text:t("group_privacy")}));
   if (ui.group.status === "loading") box.appendChild(el("p", {class:"muted", style:"margin-top:12px"}, [el("span", {class:"spin"}), " ", t("loading")]));
@@ -1343,15 +1408,16 @@ function viewGroup(){
     var open = ui.groupOpen === key;
     var row = el("div", {class:"member" + (isMe ? " me" : "") + (open ? " open" : ""), role:"button", tabindex:"0", "aria-expanded":String(open), onclick:function(){ ui.groupOpen = open ? null : key; render(); }}, [
       el("div", {class:"ml", style:"color:" + rankColor(ri), text:rLabel(ri)}),
-      el("div", {style:"min-width:0"}, [el("div", {class:"mn", text: str(m.name, 30) + (isMe ? " (" + t("group_you") + ")" : "")}), el("div", {class:"ms", text: t("gauge_discipline") + " " + (m.discipline == null ? "—" : t("percent_value", {n:m.discipline})) + ", " + t("streak") + " " + (Number(m.streak)||0)})]),
+      el("div", {style:"min-width:0"}, [el("div", {class:"mn", text: str(m.name, 30) + (isMe ? " (" + t("group_you") + ")" : "") + (m.owner === true ? " · " + t("group_owner_badge") : "")}), el("div", {class:"ms", text: t("gauge_discipline") + " " + (m.discipline == null ? "—" : t("percent_value", {n:m.discipline})) + ", " + t("streak") + " " + (Number(m.streak)||0)})]),
       el("div", {class:"mp", text: fmt(m.points)}),
       el("div", {class:"mt"}, [el("div", {class:"ms", text: t("group_today", {done:done, due:due})}), el("div", {class:"mini"}, el("i", {style:"width:" + (due ? Math.round(done/due*100) : 0) + "%"}))]),
       open ? memberDetail(m, ri) : null
     ]);
-    row.addEventListener("keydown", function(e){ if (e.key === "Enter" || e.key === " "){ e.preventDefault(); row.click(); } });
+    row.addEventListener("keydown", function(e){ if (e.target === row && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); row.click(); } });
     list.appendChild(row);
   });
   box.appendChild(list);
+  if (ui.group.isOwner) box.appendChild(groupAdminSection());
   box.appendChild(el("button", {class:"btn block ghost", style:"margin-top:14px", text:t("group_refresh"), onclick:function(){ refreshGroup(); fetchGroupChat(); render(); }}));
   box.appendChild(groupChatSection());
   return box;
@@ -1364,9 +1430,75 @@ function memberDetail(m, ri){
     el("p", {class:"small", style:"margin-top:10px;font-weight:700", text:t("group_done_today")}),
     doneList.length
       ? el("ul", {class:"mdone"}, doneList.map(function(d){ var pi = pillarInfo(d.pillar); return el("li", {text: (d.pillar ? pi.emoji + " " : "✓ ") + str(d.title, 60)}); }))
-      : el("p", {class:"ms", text:t("group_done_none")})
+      : el("p", {class:"ms", text:t("group_done_none")}),
+    ui.group.isOwner && m.me !== true && typeof m.pub === "string" ? kickButton(m) : null
   ]);
 }
+function kickButton(m){
+  var armed = ui.kickArm === m.pub, name = str(m.name, 30);
+  return el("button", {class:"btn sm " + (armed ? "danger" : "ghost"), style:"margin-top:12px", text: armed ? t("group_kick_confirm", {name:name}) : t("group_kick"), onclick:function(ev){
+    ev.stopPropagation();
+    if (!armed){ ui.kickArm = m.pub; render(); setTimeout(function(){ if (ui.kickArm === m.pub){ ui.kickArm = null; if (ui.tab === "group") renderKeepFocus(); } }, 4000); return; }
+    ui.kickArm = null;
+    apiFull("/api/group", { action:"kick", group: state.group.code, id: state.user.id, pub: m.pub }).then(function(r){
+      if (r.status === 200 && r.json && r.json.ok){ ui.groupOpen = null; toast("", t("group_kicked_done", {name:name})); refreshGroup(true); }
+      else toast("", t("group_err_offline"));
+    });
+  }});
+}
+function groupAdminSection(){
+  var a = ui.groupAdmin || (ui.groupAdmin = { draft:"", err:"", busy:false });
+  var s = el("section", {class:"sect"}, [el("h2", {text:t("group_admin_title")}), el("p", {class:"small muted", style:"margin:6px 0 12px", text:t("group_admin_hint")})]);
+  var inp = el("input", {class:"in", id:"gadmin-in", maxlength:"6", value:a.draft, placeholder:t("group_new_code"), "aria-label":t("group_new_code"), autocapitalize:"characters", style:"text-transform:uppercase;letter-spacing:.15em;font-weight:700"});
+  inp.addEventListener("input", function(){ a.draft = inp.value; });
+  function submit(){
+    var c = a.draft.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!/^[A-Z0-9]{6}$/.test(c)){ a.err = t("group_code_invalid"); render(); return; }
+    if (a.busy || !state.group) return;
+    a.busy = true; a.err = ""; render();
+    var old = state.group.code;
+    apiFull("/api/group", { action:"rename", group: old, id: state.user.id, newCode: c }).then(function(r){
+      a.busy = false;
+      if (r.status === 200 && r.json && typeof r.json.group === "string"){
+        if (state.group && state.group.code === old){ state.group = {code:r.json.group}; save(); }
+        a.draft = ""; ui.gchat = {status:"idle", messages:[]};
+        toast("", t("group_code_changed_owner", {code:r.json.group}));
+        refreshGroup(); fetchGroupChat(); render(); return;
+      }
+      var e = r.json && r.json.error;
+      a.err = t(e === "code_taken" ? "group_err_code_taken" : e === "not_owner" ? "group_err_not_owner" : "group_err_offline");
+      render();
+    });
+  }
+  inp.addEventListener("keydown", function(e){ if (e.key === "Enter"){ e.preventDefault(); submit(); } });
+  s.appendChild(el("div", {class:"row"}, [el("div", {class:"grow"}, inp), el("button", {class:"btn", text:t("group_code_random"), onclick:function(){ a.draft = genCode(); inp.value = a.draft; }})]));
+  s.appendChild(el("button", {class:"btn primary block", style:"margin-top:8px", disabled:a.busy, text: a.busy ? t("loading") : t("group_code_change"), onclick:submit}));
+  if (a.err) s.appendChild(el("p", {class:"err", role:"alert", text:a.err}));
+  return s;
+}
+function inviteLink(code){ return location.origin + location.pathname + "?join=" + code; }
+function inviteToGroup(){
+  if (!state.group) return;
+  var code = state.group.code, url = inviteLink(code), text = t("group_invite_text", {code:code});
+  if (navigator.share){ navigator.share({ title: t("app_name"), text: text, url: url }).catch(function(){}); return; }
+  copyText(text + " " + url);
+}
+function leaveGroup(){
+  if (!state.group) return;
+  apiFull("/api/group", { action:"leave", group: state.group.code, id: state.user.id });
+  state.group = null; inviteCode = null; save(); resetGroupUI();
+  toast("", t("group_left"));
+}
+// Lien d'invitation ?join=CODE : on le lit une fois puis on nettoie l'adresse.
+var inviteCode = (function(){
+  try {
+    var p = new URLSearchParams(location.search).get("join");
+    if (!p) return null;
+    history.replaceState(null, "", location.pathname);
+    p = p.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return /^[A-Z0-9]{6}$/.test(p) ? p : null;
+  } catch(e){ return null; }
+})();
 
 /* --- Group chat --- */
 var gchatDraft = "", gchatTimer = null, gchatTick = 0;
@@ -1446,12 +1578,13 @@ function readSession(){
 }
 function writeSession(s){ try { if (s) window.localStorage.setItem(SESSION_KEY, JSON.stringify(s)); else window.localStorage.removeItem(SESSION_KEY); } catch(e){} }
 var session = readSession(), cloudTimer = null, cloudBusy = false, dirtySeq = 0, acctUser = "", acctPass = "";
-// Comme api() mais garde le code HTTP (identifiants faux, pseudo pris, hors ligne…).
-function accountCall(body){
+function accountCall(body){ return apiFull("/api/account", body); }
+// Comme api() mais garde le code HTTP (identifiants faux, pseudo pris, code introuvable, hors ligne…).
+function apiFull(path, body){
   return new Promise(function(resolve){
     var done = false, timer = setTimeout(function(){ if (!done){ done = true; resolve({status:0, json:null}); } }, 20000);
     try {
-      fetch("/api/account", { method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) }).then(function(res){
+      fetch(path, { method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) }).then(function(res){
         return res.text().then(function(txt){ var j = null; try { j = JSON.parse(txt); } catch(e){} return {status:res.status, json: isObj(j) ? j : null}; });
       }).then(function(r){ if (!done){ done = true; clearTimeout(timer); resolve(r); } }, function(){ if (!done){ done = true; clearTimeout(timer); resolve({status:0, json:null}); } });
     } catch(e){ done = true; clearTimeout(timer); resolve({status:0, json:null}); }
@@ -1683,7 +1816,10 @@ if (!L){
   return;
 }
 saveLocal();
+if (inviteCode && state.group && state.group.code === inviteCode) inviteCode = null;
+if (inviteCode && state.onboardingDone) ui.tab = "group";
 if (state.onboardingDone) refreshDay(); else render();
+if (ui.tab === "group"){ fetchGroupChat(); startGroupPolling(); }
 cloudSyncOnBoot();
 })();
 </script>

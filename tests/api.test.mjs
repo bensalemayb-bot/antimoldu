@@ -9,6 +9,7 @@ const tasks = (await import("../api/tasks.js")).default;
 const state = (await import("../api/state.js")).default;
 const chat = (await import("../api/chat.js")).default;
 const account = (await import("../api/account.js")).default;
+const group = (await import("../api/group.js")).default;
 
 const ENV_KEYS = [
   "GEMINI_API_KEY", "GEMINI_MODEL", "GROQ_API_KEY", "GROQ_MODEL",
@@ -29,6 +30,7 @@ let store = new Map(); // key -> Map(field -> value)
 let counters = new Map(); // key -> nombre (INCR)
 let lists = new Map(); // key -> tableau (RPUSH/LRANGE)
 let strings = new Map(); // key -> chaîne (SET/GET)
+let sets = new Map(); // key -> Set (SADD/SISMEMBER)
 
 function redisExec(cmd) {
   const [op, key, ...args] = cmd;
@@ -51,7 +53,16 @@ function redisExec(cmd) {
     case "EXPIRE": return 1;
     case "SET": { if (args.includes("NX") && strings.has(key)) return null; strings.set(key, String(args[0])); return "OK"; }
     case "GET": return strings.has(key) ? strings.get(key) : null;
-    case "DEL": return strings.delete(key) ? 1 : 0;
+    case "DEL": { let n = 0; for (const m of [strings, store, lists, sets]) if (m.delete(key)) n = 1; return n; }
+    case "EXISTS": return [strings, store, lists, sets].some((m) => m.has(key) && (m !== store || m.get(key).size > 0)) ? 1 : 0;
+    case "RENAME": {
+      const m = [strings, store, lists, sets].find((x) => x.has(key));
+      if (!m) throw new Error("ERR no such key");
+      m.set(args[0], m.get(key)); m.delete(key); return "OK";
+    }
+    case "HKEYS": return [...h.keys()];
+    case "SADD": { const s = sets.get(key) || new Set(); const before = s.size; args.forEach((a) => s.add(String(a))); sets.set(key, s); return s.size - before; }
+    case "SISMEMBER": return sets.get(key)?.has(String(args[0])) ? 1 : 0;
     case "RPUSH": { const l = lists.get(key) || []; l.push(...args.map(String)); lists.set(key, l); return l.length; }
     case "LTRIM": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; lists.set(key, l.slice(s, e + 1)); return "OK"; }
     case "LRANGE": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; return l.slice(s, e + 1); }
@@ -97,7 +108,9 @@ function geminiText(text) {
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
-  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map(); lists = new Map(); strings = new Map();
+  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map(); lists = new Map(); strings = new Map(); sets = new Map();
+  // groupes déjà créés (propriétaire "owner0") utilisés par les tests
+  for (const g of ["ABC123", "FULL50", "KVKV12"]) strings.set("am:go:" + g, "owner0");
   globalThis.fetch = fakeFetch;
 });
 afterEach(() => {
@@ -510,7 +523,7 @@ test("state: POST then GET returns member, sorted by rank then points", async ()
   assert.equal(r.headers["cache-control"], "no-store");
   assert.deepEqual(r.json.members.map((m) => m.name), ["Max", "Léa", "Sam"]);
   const m = r.json.members.find((x) => x.me === true);
-  assert.deepEqual(Object.keys(m).sort(), ["discipline", "doneToday", "me", "name", "points", "pub", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt", "weekDone"]);
+  assert.deepEqual(Object.keys(m).sort(), ["discipline", "doneToday", "me", "name", "owner", "points", "pub", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt", "weekDone"]);
   assert.equal(r.json.members.filter((x) => x.me).length, 1);
   assert.match(m.pub, /^[0-9a-f]{12}$/);
   // les identifiants (clés d'écriture) ne sortent jamais
@@ -678,7 +691,7 @@ test("chat: non-member, bad group/id, empty text => 400; text bounded to 500", a
   r = await call(chat, { method: "GET", url: "/api/chat?group=nope" });
   assert.equal(r.status, 400);
   await call(chat, { body: { group: "ABC123", id: "u1", text: "y".repeat(2000) } });
-  r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123&me=u1" });
   assert.equal(r.json.messages[0].text.length, 500);
 });
 
@@ -687,14 +700,14 @@ test("chat: keeps the last 100, returns the last 50 in order", async () => {
   await call(state, { body: { group: "ABC123", id: "u1", profile: profile() } });
   for (let i = 0; i < 120; i++) await call(chat, { body: { group: "ABC123", id: "u1", text: "m" + i } });
   assert.equal(lists.get("am:gc:ABC123").length, 100);
-  const r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  const r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123&me=u1" });
   assert.equal(r.json.messages.length, 50);
   assert.equal(r.json.messages[0].text, "m70");
   assert.equal(r.json.messages[49].text, "m119");
 });
 
 test("chat: storage not configured => 503; wrong method => 405", async () => {
-  let r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  let r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123&me=u1" });
   assert.equal(r.status, 503);
   assert.deepEqual(r.json, { error: "storage_unavailable" });
   r = await call(chat, { method: "DELETE" });
@@ -730,6 +743,111 @@ test("coach: replies over the word limit are cut at the last sentence end", asyn
   geminiReply = geminiText(long);
   const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
   assert.ok(r.json.text.split(/\s+/).length <= 60);
+});
+
+// ================= /api/group =================
+const join = (code, id, name = id) => call(state, { body: { group: code, id, profile: profile({ name }) } });
+const members = async (code, me) => (await call(state, { method: "GET", url: `/api/state?group=${code}&me=${me}` })).json;
+
+test("group: create makes the creator owner; unknown code => group_not_found; taken code => group_exists", async () => {
+  withUpstash();
+  let r = await call(group, { body: { action: "create", group: "NEW001", id: "boss" } });
+  assert.deepEqual(r.json, { ok: true });
+  r = await call(group, { body: { action: "create", group: "NEW001", id: "other" } });
+  assert.deepEqual(r.json, { error: "group_exists" });
+  r = await join("NOPE00", "u1");
+  assert.equal(r.status, 400);
+  assert.deepEqual(r.json, { error: "group_not_found" });
+  r = await call(group, { body: { action: "check", group: "NOPE00", id: "u1" } });
+  assert.deepEqual(r.json, { error: "group_not_found" });
+  r = await call(group, { body: { action: "check", group: "NEW001", id: "u1" } });
+  assert.deepEqual(r.json, { ok: true });
+  await join("NEW001", "boss", "Ben"); await join("NEW001", "u1", "Léa");
+  let j = await members("NEW001", "boss");
+  assert.equal(j.isOwner, true);
+  assert.equal(j.members.find((m) => m.name === "Ben").owner, true);
+  j = await members("NEW001", "u1");
+  assert.equal(j.isOwner, false);
+});
+
+test("group: rename moves members, chat and owner; members follow, outsiders can't use the old code", async () => {
+  withUpstash();
+  await call(group, { body: { action: "create", group: "OLD111", id: "boss" } });
+  await join("OLD111", "boss"); await join("OLD111", "u1");
+  await call(chat, { body: { group: "OLD111", id: "u1", text: "salut" } });
+  let r = await call(group, { body: { action: "rename", group: "OLD111", id: "u1", newCode: "NEW222" } });
+  assert.equal(r.status, 403);
+  assert.deepEqual(r.json, { error: "not_owner" });
+  r = await call(group, { body: { action: "rename", group: "OLD111", id: "boss", newCode: "bad" } });
+  assert.deepEqual(r.json, { error: "bad_code" });
+  r = await call(group, { body: { action: "rename", group: "OLD111", id: "boss", newCode: "NEW222" } });
+  assert.deepEqual(r.json, { ok: true, group: "NEW222" });
+  assert.equal(store.get("am:g:NEW222").size, 2);
+  assert.ok(!store.has("am:g:OLD111"));
+  assert.equal((await members("NEW222", "boss")).isOwner, true);
+  // un membre qui utilise encore l'ancien code est redirigé
+  assert.deepEqual(await members("OLD111", "u1"), { movedTo: "NEW222", members: [] });
+  r = await join("OLD111", "u1");
+  assert.deepEqual(r.json, { movedTo: "NEW222" });
+  const msgs = (await call(chat, { method: "GET", url: "/api/chat?group=NEW222&me=u1" })).json.messages;
+  assert.deepEqual(msgs.map((m) => m.text), ["salut"]);
+  // un inconnu avec l'ancien code ne rentre plus, et ne peut pas recréer le groupe
+  r = await join("OLD111", "stranger");
+  assert.deepEqual(r.json, { error: "group_not_found" });
+  r = await call(group, { body: { action: "create", group: "OLD111", id: "stranger" } });
+  assert.deepEqual(r.json, { error: "group_exists" });
+  // code déjà pris
+  await call(group, { body: { action: "create", group: "TAKEN1", id: "x" } });
+  r = await call(group, { body: { action: "rename", group: "NEW222", id: "boss", newCode: "TAKEN1" } });
+  assert.deepEqual(r.json, { error: "code_taken" });
+});
+
+test("group: kick removes the member for good (no rejoin, no chat); owner can't kick self; only owner kicks", async () => {
+  withUpstash();
+  await call(group, { body: { action: "create", group: "KICK01", id: "boss" } });
+  await join("KICK01", "boss", "Ben"); await join("KICK01", "u1", "Léa"); await join("KICK01", "u2", "Max");
+  const list = (await members("KICK01", "boss")).members;
+  const lea = list.find((m) => m.name === "Léa").pub;
+  const ben = list.find((m) => m.name === "Ben").pub;
+  let r = await call(group, { body: { action: "kick", group: "KICK01", id: "u2", pub: lea } });
+  assert.equal(r.status, 403);
+  r = await call(group, { body: { action: "kick", group: "KICK01", id: "boss", pub: ben } });
+  assert.deepEqual(r.json, { error: "cannot_kick_self" });
+  r = await call(group, { body: { action: "kick", group: "KICK01", id: "boss", pub: "000000000000" } });
+  assert.deepEqual(r.json, { error: "bad_member" });
+  r = await call(group, { body: { action: "kick", group: "KICK01", id: "boss", pub: lea } });
+  assert.deepEqual(r.json, { ok: true });
+  assert.deepEqual((await members("KICK01", "boss")).members.map((m) => m.name).sort(), ["Ben", "Max"]);
+  assert.deepEqual(await members("KICK01", "u1"), { kicked: true, members: [] });
+  assert.deepEqual((await join("KICK01", "u1")).json, { kicked: true });
+  assert.deepEqual((await call(group, { body: { action: "check", group: "KICK01", id: "u1" } })).json, { kicked: true });
+  r = await call(chat, { method: "GET", url: "/api/chat?group=KICK01&me=u1" });
+  assert.equal(r.status, 403);
+  r = await call(chat, { body: { group: "KICK01", id: "u1", text: "je reviens" } });
+  assert.deepEqual(r.json, { error: "not_member" });
+});
+
+test("group: leave removes the member; owner leaving frees ownership; legacy group without owner is claimed", async () => {
+  withUpstash();
+  await call(group, { body: { action: "create", group: "LEAVE1", id: "boss" } });
+  await join("LEAVE1", "boss"); await join("LEAVE1", "u1");
+  await call(group, { body: { action: "leave", group: "LEAVE1", id: "boss" } });
+  assert.equal(store.get("am:g:LEAVE1").size, 1);
+  assert.equal(strings.get("am:go:LEAVE1"), undefined);
+  // le membre restant peut administrer (il reprend le groupe)
+  const r = await call(group, { body: { action: "rename", group: "LEAVE1", id: "u1", newCode: "LEAVE2" } });
+  assert.deepEqual(r.json, { ok: true, group: "LEAVE2" });
+  assert.equal(strings.get("am:go:LEAVE2"), "u1");
+});
+
+test("group: invalid action/group/id => 400; GET => 405", async () => {
+  withUpstash();
+  for (const [body, code] of [[{ action: "x", group: "ABC123", id: "u1" }, "bad_action"], [{ action: "check", group: "abc", id: "u1" }, "bad_group"], [{ action: "check", group: "ABC123", id: "a b" }, "bad_id"]]) {
+    const r = await call(group, { body });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error, code);
+  }
+  assert.equal((await call(group, { method: "GET" })).status, 405);
 });
 
 // ================= /api/account =================
@@ -783,7 +901,7 @@ test("account: input validation (username, password, action, state)", async () =
     assert.equal(r.status, 400, code);
     assert.equal(r.json.error, code);
   }
-  assert.equal(strings.size, 0);
+  assert.ok(![...strings.keys()].some((k) => k.startsWith("am:u:")));
 });
 
 test("account: save then load with the token; bad token => 401; logout kills the session", async () => {

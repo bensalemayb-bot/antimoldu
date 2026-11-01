@@ -8,7 +8,7 @@ const MAX_TEXT = 500;
 const KEEP = 100;
 const SHOW = 50;
 const TTL_SEC = 30 * 24 * 3600;
-const chatKey = (group) => "am:gc:" + group;
+export const chatKey = (group) => "am:gc:" + group;
 
 function groupParam(v) {
   if (typeof v !== "string" || !GROUP_RE.test(v)) throw new BadRequest("bad_group");
@@ -18,6 +18,10 @@ function groupParam(v) {
 async function getChat(req, res) {
   const group = groupParam(queryParam(req, "group"));
   const me = queryParam(req, "me");
+  // Lecture réservée aux membres (un exclu ne lit plus la discussion).
+  if (typeof me !== "string" || !ID_RE.test(me) || Number(await redis(["HEXISTS", hashKey(group), me])) !== 1) {
+    return sendJson(res, 403, { error: "not_member" });
+  }
   const raw = await redis(["LRANGE", chatKey(group), -SHOW, -1]);
   const messages = [];
   if (Array.isArray(raw)) {
