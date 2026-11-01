@@ -333,7 +333,7 @@ function saveLocal(){
 }
 function save(){ saveLocal(); markDirty(); }
 function defaults(){
-  return { version:1, coachStyle:"cash", lang:(navigator.language||"fr").toLowerCase().indexOf("fr")===0 ? "fr" : "en",
+  return { version:1, coachStyle:"brutal", coachStyleSet:false, lang:(navigator.language||"fr").toLowerCase().indexOf("fr")===0 ? "fr" : "en",
     user:{ id:uuid(), name:"", age:"", occupation:"", dayType:{wake:"",sleep:"",timeSinks:""}, abandoned:"" },
     profile:{ pain:"", painEmotions:[], dissonance:{corps:"",argent:"",relations:"",fierte:""}, intention:"" },
     vieProType:null, diagnostic:{}, objectives:{}, oath:null, group:null,
@@ -368,7 +368,9 @@ function normalize(s){
   if (!isObj(s)) return d;
   var o = d;
   o.lang = s.lang === "en" ? "en" : s.lang === "fr" ? "fr" : d.lang;
-  o.coachStyle = s.coachStyle === "brutal" ? "brutal" : "cash";
+  /* Sans pitié par défaut ; Cash seulement si la personne l'a choisi elle-même */
+  o.coachStyleSet = s.coachStyleSet === true;
+  o.coachStyle = o.coachStyleSet && s.coachStyle === "cash" ? "cash" : "brutal";
   var u = isObj(s.user) ? s.user : {};
   o.user = { id: str(u.id) || d.user.id, name: str(u.name, 60), age: str(u.age, 4), occupation: str(u.occupation, 200),
     dayType: { wake: str(isObj(u.dayType)?u.dayType.wake:"",10), sleep: str(isObj(u.dayType)?u.dayType.sleep:"",10), timeSinks: str(isObj(u.dayType)?u.dayType.timeSinks:"",400) },
@@ -1225,7 +1227,7 @@ function styleSeg(){
     el("div", {class:"seg", role:"group", "aria-label":t("mentor_style")}, ["cash","brutal"].map(function(s){
       return el("button", {"aria-pressed": String(state.coachStyle === s), text:t("mentor_style_" + s), onclick:function(){
         if (state.coachStyle === s) return;
-        state.coachStyle = s;
+        state.coachStyle = s; state.coachStyleSet = true;
         state.coach.morning = null; /* le mot du jour est réécrit dans le nouveau ton */
         save(); render(); fetchMorning();
       }});
