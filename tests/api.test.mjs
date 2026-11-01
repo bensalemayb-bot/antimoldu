@@ -8,6 +8,7 @@ const coach = (await import("../api/coach.js")).default;
 const tasks = (await import("../api/tasks.js")).default;
 const state = (await import("../api/state.js")).default;
 const chat = (await import("../api/chat.js")).default;
+const account = (await import("../api/account.js")).default;
 
 const ENV_KEYS = [
   "GEMINI_API_KEY", "GEMINI_MODEL", "GROQ_API_KEY", "GROQ_MODEL",
@@ -27,6 +28,7 @@ let groqReply = null;
 let store = new Map(); // key -> Map(field -> value)
 let counters = new Map(); // key -> nombre (INCR)
 let lists = new Map(); // key -> tableau (RPUSH/LRANGE)
+let strings = new Map(); // key -> chaîne (SET/GET)
 
 function redisExec(cmd) {
   const [op, key, ...args] = cmd;
@@ -47,6 +49,9 @@ function redisExec(cmd) {
     case "HEXISTS": return h.has(args[0]) ? 1 : 0;
     case "HDEL": { const had = h.delete(args[0]); return had ? 1 : 0; }
     case "EXPIRE": return 1;
+    case "SET": { if (args.includes("NX") && strings.has(key)) return null; strings.set(key, String(args[0])); return "OK"; }
+    case "GET": return strings.has(key) ? strings.get(key) : null;
+    case "DEL": return strings.delete(key) ? 1 : 0;
     case "RPUSH": { const l = lists.get(key) || []; l.push(...args.map(String)); lists.set(key, l); return l.length; }
     case "LTRIM": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; lists.set(key, l.slice(s, e + 1)); return "OK"; }
     case "LRANGE": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; return l.slice(s, e + 1); }
@@ -92,7 +97,7 @@ function geminiText(text) {
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
-  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map(); lists = new Map();
+  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map(); lists = new Map(); strings = new Map();
   globalThis.fetch = fakeFetch;
 });
 afterEach(() => {
@@ -694,6 +699,93 @@ test("chat: storage not configured => 503; wrong method => 405", async () => {
   assert.deepEqual(r.json, { error: "storage_unavailable" });
   r = await call(chat, { method: "DELETE" });
   assert.equal(r.status, 405);
+});
+
+// ================= /api/account =================
+const appState = (over = {}) => ({ user: { id: "u-123", name: "Ben" }, tasks: [{ id: "t1", title: "50 pompes" }], onboardingDone: true, ...over });
+
+test("account: register, then login from another phone returns the saved state", async () => {
+  withUpstash();
+  let r = await call(account, { body: { action: "register", username: "  Ben_75 ", password: "secret123", state: appState() } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.username, "ben_75");
+  assert.ok(typeof r.json.token === "string" && r.json.token.length >= 40);
+  const stored = strings.get("am:u:ben_75");
+  assert.ok(!stored.includes("secret123"), "password never stored in clear");
+  assert.deepEqual(Object.keys(JSON.parse(stored)).sort(), ["createdAt", "hash", "salt"]);
+  // le jeton n'est jamais stocké tel quel
+  assert.ok(![...strings.keys()].some((k) => k.includes(r.json.token)));
+  r = await call(account, { body: { action: "login", username: "BEN_75", password: "secret123" } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.state, appState());
+  assert.ok(typeof r.json.updatedAt === "string");
+  assertClean(r);
+});
+
+test("account: wrong password / unknown user => 401 bad_credentials; taken username => 400", async () => {
+  withUpstash();
+  await call(account, { body: { action: "register", username: "lea", password: "motdepasse" } });
+  let r = await call(account, { body: { action: "login", username: "lea", password: "mauvais!" } });
+  assert.equal(r.status, 401);
+  assert.deepEqual(r.json, { error: "bad_credentials" });
+  r = await call(account, { body: { action: "login", username: "personne", password: "motdepasse" } });
+  assert.equal(r.status, 401);
+  assert.deepEqual(r.json, { error: "bad_credentials" });
+  r = await call(account, { body: { action: "register", username: "LEA", password: "autre123" } });
+  assert.equal(r.status, 400);
+  assert.deepEqual(r.json, { error: "username_taken" });
+});
+
+test("account: input validation (username, password, action, state)", async () => {
+  withUpstash();
+  const bad = [
+    [{ action: "register", username: "ab", password: "secret123" }, "bad_username"],
+    [{ action: "register", username: "a b<c>", password: "secret123" }, "bad_username"],
+    [{ action: "register", username: "x".repeat(21), password: "secret123" }, "bad_username"],
+    [{ action: "register", username: "ben", password: "12345" }, "bad_password"],
+    [{ action: "register", username: "ben", password: "secret123", state: [1, 2] }, "bad_state"],
+    [{ action: "register", username: "ben", password: "secret123", state: { big: "x".repeat(310 * 1024) } }, "state_too_large"],
+    [{ action: "hack" }, "bad_action"],
+  ];
+  for (const [body, code] of bad) {
+    const r = await call(account, { body });
+    assert.equal(r.status, 400, code);
+    assert.equal(r.json.error, code);
+  }
+  assert.equal(strings.size, 0);
+});
+
+test("account: save then load with the token; bad token => 401; logout kills the session", async () => {
+  withUpstash();
+  const { json: { token } } = await call(account, { body: { action: "register", username: "sam", password: "secret123" } });
+  let r = await call(account, { body: { action: "load", token } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.state, null);
+  r = await call(account, { body: { action: "save", token, state: appState({ notes: ["n1"] }) } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.ok, true);
+  r = await call(account, { body: { action: "load", token } });
+  assert.deepEqual(r.json.state.notes, ["n1"]);
+  assert.equal(r.json.username, "sam");
+  r = await call(account, { body: { action: "save", token: "x".repeat(43), state: appState() } });
+  assert.equal(r.status, 401);
+  assert.deepEqual(r.json, { error: "bad_session" });
+  r = await call(account, { body: { action: "load" } });
+  assert.equal(r.status, 401);
+  await call(account, { body: { action: "logout", token } });
+  r = await call(account, { body: { action: "load", token } });
+  assert.equal(r.status, 401);
+});
+
+test("account: storage not configured => 503; GET => 405; login rate limited after 30", async () => {
+  let r = await call(account, { body: { action: "login", username: "sam", password: "secret123" } });
+  assert.equal(r.status, 503);
+  r = await call(account, { method: "GET" });
+  assert.equal(r.status, 405);
+  withUpstash();
+  for (let i = 0; i < 30; i++) await call(account, { body: { action: "login", username: "sam", password: "wrong12" } });
+  r = await call(account, { body: { action: "login", username: "sam", password: "wrong12" } });
+  assert.equal(r.status, 429);
 });
 
 // ================= limites d'appels =================

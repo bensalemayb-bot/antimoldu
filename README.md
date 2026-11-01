@@ -14,7 +14,7 @@ Un mentor qui parle cash, un carnet de notes et des tâches qui te rapportent (o
 | `index.html` | L'app (écrans, styles, code) |
 | `content.js` | Tous les textes FR/EN, le diagnostic, les tâches, les boosts |
 | `logic.js` | Les règles : rangs, points, discipline |
-| `api/` | Le serveur : mentor IA (Gemini), propositions de tâches, classement |
+| `api/` | Le serveur : mentor IA (Gemini/Groq), propositions de tâches, classement, chat de groupe, comptes |
 | `tests/` | Les tests (`node --test`) |
 | `SPEC.md` | La spécification complète |
 
@@ -44,7 +44,7 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 8. **Vérifier** : ouvre le lien sur ton téléphone, fais l'onboarding, crée un groupe. Le mot du mentor doit être personnalisé (avec ton prénom ou tes tâches), pas un message générique. Un pote rejoint avec le code → vous vous voyez au classement.
 
 ### Bon à savoir
-- Pas de compte : tout est stocké sur ton téléphone. Change de téléphone ? **Réglages → Exporter**, puis Importer sur le nouveau.
+- Compte facultatif (pseudo + mot de passe, **Réglages → Compte**) : ta progression est sauvegardée en ligne (Upstash) et se récupère sur un autre téléphone via « J'ai déjà un compte ». Mot de passe chiffré (scrypt), jamais stocké en clair. Sans compte, tout reste sur le téléphone (Réglages → Exporter / Importer).
 - Ce que le groupe reçoit : prénom, rang, points, discipline, série, « x/y aujourd'hui », les tâches cochées aujourd'hui (titre + pilier), le total sur 7 jours, et les messages du chat de groupe (100 derniers, gardés 30 jours). Pas les notes ni le diagnostic.
 - Protection : le classement ne montre jamais les identifiants (personne ne peut modifier la ligne d'un autre), et le serveur limite les appels (40 messages au mentor par heure et par connexion, 1000 appels IA par jour au total — modifiable avec `vercel env add AI_DAILY_LIMIT`). Au-delà, l'app passe en mode secours.
 - Ce que l'IA reçoit : ton profil, tes tâches, tes 5 dernières notes, pour te répondre. Offre gratuite de Gemini : Google peut utiliser ces données pour améliorer ses modèles.
@@ -59,7 +59,7 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 | `index.html` | The app (screens, styles, code) |
 | `content.js` | All FR/EN copy, diagnostic, task library, boosts |
 | `logic.js` | Rules: ranks, points, discipline |
-| `api/` | Server: AI mentor (Gemini), task suggestions, leaderboard |
+| `api/` | Server: AI mentor (Gemini/Groq), task suggestions, leaderboard, group chat, accounts |
 | `tests/` | Tests (`node --test`) |
 | `SPEC.md` | Full specification |
 
@@ -89,7 +89,7 @@ Type every command **in PowerShell, inside the `anti-moldu` folder**.
 8. **Check**: open the link on your phone, complete onboarding, create a group. The mentor's line should be personal (your name or tasks), not generic. A friend joins with the code → you see each other on the leaderboard.
 
 ### Good to know
-- No accounts: everything lives on your phone. New phone? **Settings → Export**, then Import.
+- Optional account (username + password, **Settings → Account**): your progress is saved online (Upstash) and restored on another phone via "I already have an account". Password hashed with scrypt, never stored in clear. Without an account, everything stays on the phone (Settings → Export / Import).
 - What the group receives: first name, rank, points, discipline, streak, "x/y today", tasks checked off today (title + pillar), the 7-day total, and group chat messages (last 100, kept 30 days). Not your notes or diagnostic.
 - Protection: the leaderboard never exposes member ids (nobody can overwrite someone else's row), and the server rate-limits calls (40 mentor messages per hour per connection, 1000 AI calls per day overall — change with `vercel env add AI_DAILY_LIMIT`). Beyond that, the app falls back to offline mode.
 - What the AI receives: your profile, tasks and last 5 notes, to answer you. On Gemini's free tier, Google may use this data to improve its models.

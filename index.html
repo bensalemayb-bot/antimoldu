@@ -326,11 +326,12 @@ function genCode(){
 /* ---------- storage ---------- */
 var memStore = null, storageOk = true, loadNotice = null;
 function readRaw(){ try { return window.localStorage.getItem(KEY); } catch(e){ storageOk = false; return memStore; } }
-function save(){
+function saveLocal(){
   var raw; try { raw = JSON.stringify(state); } catch(e){ return; }
   memStore = raw;
   try { window.localStorage.setItem(KEY, raw); } catch(e){ storageOk = false; }
 }
+function save(){ saveLocal(); markDirty(); }
 function defaults(){
   return { version:1, lang:(navigator.language||"fr").toLowerCase().indexOf("fr")===0 ? "fr" : "en",
     user:{ id:uuid(), name:"", age:"", occupation:"", dayType:{wake:"",sleep:"",timeSinks:""}, abandoned:"" },
@@ -525,7 +526,7 @@ function renderCoachText(text){
 
 /* ---------- state ---------- */
 var state = load();
-var ui = { tab:"today", view:"today", obStep:0, diagPage:0, taskPage:0, obError:"", finishError:"", proposals:{}, choice:{}, groupMode:null, groupOpen:null, gchat:{status:"idle", messages:[]}, unlock:null, sheet:null, chatBusy:false, avisOpen:false, noteEdit:null, noteDel:null, resetArm:false, group:{status:"idle", members:[]}, morningBusy:false, regressionText:null, regressionBusy:false, settingsPanel:null, importMsg:"", celebrate:null };
+var ui = { tab:"today", view:"today", obStep:0, diagPage:0, taskPage:0, obError:"", finishError:"", proposals:{}, choice:{}, groupMode:null, groupOpen:null, obLogin:false, acct:{busy:false, err:""}, gchat:{status:"idle", messages:[]}, unlock:null, sheet:null, chatBusy:false, avisOpen:false, noteEdit:null, noteDel:null, resetArm:false, group:{status:"idle", members:[]}, morningBusy:false, regressionText:null, regressionBusy:false, settingsPanel:null, importMsg:"", celebrate:null };
 var currentDay = today();
 if (!storageOk && !loadNotice) loadNotice = "blocked";
 
@@ -618,11 +619,16 @@ function renderOnboarding(){
   return root;
 }
 function obWelcome(){
-  return [el("div", {class:"hero"}, [
+  var nodes = [el("div", {class:"hero"}, [
     el("div", {class:"scope", "aria-hidden":"true", style:"margin-left:-6px"}, [el("div", {class:"aura"}), el("div", {class:"ring"}), el("div", {class:"ring2"}), rankLetter(0)]),
     el("h1", {text: obText("welcome","title") || t("app_name")}),
     el("p", {class:"muted", style:"margin-top:12px;font-size:18px", text: obText("welcome","subtitle") || t("app_tagline")})
   ]), el("button", {class:"btn primary block", onclick:obNext, text:t("start")})];
+  if (!session){
+    nodes.push(el("button", {class:"btn ghost block", style:"margin-top:10px", "aria-expanded":String(!!ui.obLogin), text:t("account_have"), onclick:function(){ ui.obLogin = !ui.obLogin; ui.acct.err = ""; render(); }}));
+    if (ui.obLogin) nodes.push(el("div", {class:"card", style:"margin-top:12px"}, accountForm(true)));
+  }
+  return nodes;
 }
 function obWho(){
   var u = state.user, ph = obText("who","fields") || {};
@@ -1413,10 +1419,134 @@ function startGroupPolling(){
   }, 8000);
 }
 
+/* --- Account (pseudo + mot de passe, sauvegarde en ligne) --- */
+var SESSION_KEY = "am_session_v1";
+function readSession(){
+  try { var s = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null"); return isObj(s) && typeof s.token === "string" && typeof s.username === "string" ? s : null; }
+  catch(e){ return null; }
+}
+function writeSession(s){ try { if (s) window.localStorage.setItem(SESSION_KEY, JSON.stringify(s)); else window.localStorage.removeItem(SESSION_KEY); } catch(e){} }
+var session = readSession(), cloudTimer = null, cloudBusy = false, dirtySeq = 0, acctUser = "", acctPass = "";
+// Comme api() mais garde le code HTTP (identifiants faux, pseudo pris, hors ligne…).
+function accountCall(body){
+  return new Promise(function(resolve){
+    var done = false, timer = setTimeout(function(){ if (!done){ done = true; resolve({status:0, json:null}); } }, 20000);
+    try {
+      fetch("/api/account", { method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) }).then(function(res){
+        return res.text().then(function(txt){ var j = null; try { j = JSON.parse(txt); } catch(e){} return {status:res.status, json: isObj(j) ? j : null}; });
+      }).then(function(r){ if (!done){ done = true; clearTimeout(timer); resolve(r); } }, function(){ if (!done){ done = true; clearTimeout(timer); resolve({status:0, json:null}); } });
+    } catch(e){ done = true; clearTimeout(timer); resolve({status:0, json:null}); }
+  });
+}
+function markDirty(){
+  if (!session || !state || !state.onboardingDone) return;
+  dirtySeq++;
+  if (!session.dirty){ session.dirty = true; writeSession(session); }
+  clearTimeout(cloudTimer); cloudTimer = setTimeout(cloudSave, 3000);
+}
+function cloudSave(){
+  if (!session || !state.onboardingDone) return;
+  if (cloudBusy){ clearTimeout(cloudTimer); cloudTimer = setTimeout(cloudSave, 3000); return; }
+  cloudBusy = true;
+  var token = session.token, seq = dirtySeq;
+  accountCall({ action:"save", token: token, state: state }).then(function(r){
+    cloudBusy = false;
+    if (!session || session.token !== token) return;
+    if (r.status === 200 && r.json && r.json.ok){
+      session.syncedAt = str(r.json.updatedAt, 40);
+      if (seq === dirtySeq) session.dirty = false;
+      writeSession(session);
+    } else if (r.status === 401) sessionExpired();
+    if (ui.tab === "settings") updateAccountStatus();
+  });
+}
+function sessionExpired(){ session = null; writeSession(null); toast("", t("account_expired")); if (ui.tab === "settings") render(); }
+// Remplace les données du téléphone par celles du compte.
+function applyCloudState(s, updatedAt){
+  state = normalize(s); saveLocal();
+  session.syncedAt = str(updatedAt, 40); session.dirty = false; writeSession(session);
+  ui.obStep = 0; ui.obLogin = false; ui.tab = "today"; ui.unlock = null; ui.groupOpen = null;
+  ui.group = {status:"idle", members:[]}; ui.gchat = {status:"idle", messages:[]};
+  if (state.onboardingDone) refreshDay(true); else render();
+  window.scrollTo(0,0);
+}
+function cloudSyncOnBoot(){
+  if (!session) return;
+  accountCall({ action:"load", token: session.token }).then(function(r){
+    if (!session) return;
+    if (r.status === 401) return sessionExpired();
+    if (r.status !== 200 || !r.json) return;
+    if (isObj(r.json.state) && !session.dirty && r.json.updatedAt !== session.syncedAt) applyCloudState(r.json.state, r.json.updatedAt);
+    else if (session.dirty || !r.json.state) cloudSave();
+  });
+}
+function accountError(r){
+  var code = r.json && r.json.error;
+  if (r.status === 401) return t("account_err_credentials");
+  if (r.status === 429) return t("account_err_rate");
+  if (code === "username_taken") return t("account_err_taken");
+  if (code === "bad_username") return t("account_err_username");
+  if (code === "bad_password") return t("account_err_password");
+  return t("account_err_offline");
+}
+function accountSubmit(action){
+  if (ui.acct.busy) return;
+  ui.acct = { busy:true, err:"" }; render();
+  var body = { action: action, username: acctUser.trim(), password: acctPass };
+  if (action === "register" && state.onboardingDone) body.state = state;
+  accountCall(body).then(function(r){
+    ui.acct = { busy:false, err:"" };
+    if (r.status !== 200 || !r.json || typeof r.json.token !== "string"){ ui.acct.err = accountError(r); render(); return; }
+    acctPass = "";
+    session = { token: r.json.token, username: str(r.json.username, 20), syncedAt: str(r.json.updatedAt, 40), dirty:false };
+    writeSession(session);
+    if (action === "login" && isObj(r.json.state)) applyCloudState(r.json.state, r.json.updatedAt);
+    else { if (action === "login") markDirty(); ui.obLogin = false; render(); }
+    toast("", t(action === "login" ? "account_logged_in" : "account_created", {name: session.username}));
+  });
+}
+function accountForm(loginOnly){
+  var u = el("input", {class:"in", value:acctUser, placeholder:t("account_username"), "aria-label":t("account_username"), autocomplete:"username", autocapitalize:"none", spellcheck:"false", maxlength:"20"});
+  var p = el("input", {class:"in", type:"password", value:acctPass, placeholder:t("account_password"), "aria-label":t("account_password"), autocomplete: loginOnly ? "current-password" : "new-password", maxlength:"200"});
+  u.addEventListener("input", function(){ acctUser = u.value; });
+  p.addEventListener("input", function(){ acctPass = p.value; });
+  p.addEventListener("keydown", function(e){ if (e.key === "Enter"){ e.preventDefault(); accountSubmit("login"); } });
+  var busy = !!ui.acct.busy;
+  var btns = loginOnly
+    ? el("button", {class:"btn primary block", disabled:busy, text: busy ? t("loading") : t("account_login"), onclick:function(){ accountSubmit("login"); }})
+    : el("div", {class:"two"}, [
+        el("button", {class:"btn primary", disabled:busy, text:t("account_create"), onclick:function(){ accountSubmit("register"); }}),
+        el("button", {class:"btn", disabled:busy, text:t("account_login"), onclick:function(){ accountSubmit("login"); }})
+      ]);
+  return el("div", {class:"stack"}, [u, p, btns,
+    ui.acct.err ? el("p", {class:"err", role:"alert", text:ui.acct.err}) : null,
+    el("p", {class:"small muted", text: loginOnly ? t("account_login_hint") : t("account_rules")})]);
+}
+function accountStatusText(){ return session && session.dirty ? t("account_syncing") : t("account_synced"); }
+function updateAccountStatus(){ var n = document.getElementById("acct-status"); if (n) n.textContent = accountStatusText(); }
+function accountSection(){
+  var s = el("section", {class:"sect"}, [el("h2", {text:t("account_title")})]);
+  if (session){
+    s.appendChild(el("p", {style:"margin-top:8px", text:t("account_connected", {name: session.username})}));
+    s.appendChild(el("p", {class:"small muted", id:"acct-status", text:accountStatusText()}));
+    s.appendChild(el("button", {class:"btn ghost block", style:"margin-top:12px", text:t("account_logout"), onclick:function(){
+      var token = session.token;
+      if (session.dirty) cloudSave();
+      accountCall({ action:"logout", token: token });
+      session = null; writeSession(null); toast("", t("account_logged_out")); render();
+    }}));
+    return s;
+  }
+  s.appendChild(el("p", {class:"small muted", style:"margin:6px 0 12px", text:t("account_pitch")}));
+  s.appendChild(accountForm(false));
+  return s;
+}
+
 /* --- Settings --- */
 function viewSettings(){
   var box = el("div");
   box.appendChild(el("section", {}, [el("h2", {text:t("settings_lang"), style:"margin-bottom:12px"}), langSeg()]));
+  box.appendChild(accountSection());
   var gs = el("section", {class:"sect"}, [el("h2", {text:t("group_title")})]);
   gs.appendChild(groupJoinUI(function(){ render(); }));
   box.appendChild(gs);
@@ -1533,8 +1663,9 @@ if (!L){
   app.appendChild(el("div", {class:"wrap", style:"padding-top:40px"}, [el("h2", {text:t("error_generic")}), el("p", {class:"muted", text:t("error_generic")})]));
   return;
 }
-save();
+saveLocal();
 if (state.onboardingDone) refreshDay(); else render();
+cloudSyncOnBoot();
 })();
 </script>
 </body>
