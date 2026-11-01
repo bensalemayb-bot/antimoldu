@@ -1,8 +1,8 @@
 # L'Anti-Moldu
 
-Un mentor qui parle cash, un carnet de notes et des tâches qui te rapportent (ou te coûtent) des points. Tu montes de D- à S, et ton groupe de potes voit si tu tiens — jamais quoi.
+Un mentor qui parle cash, un carnet de notes et des tâches qui te rapportent (ou te coûtent) des points. Tu montes de D- à S, et ton groupe de potes voit si tu tiens, ce que tu as coché, et vous pouvez discuter.
 
-*A blunt mentor, a notebook, and daily tasks that earn (or cost) you points. Climb from D- to S; your friends see whether you show up — never what you do.*
+*A blunt mentor, a notebook, and daily tasks that earn (or cost) you points. Climb from D- to S; your friends see whether you show up and what you checked off, and you can chat.*
 
 ---
 
@@ -45,7 +45,7 @@ Toutes les commandes se tapent **dans PowerShell, dans le dossier `anti-moldu`**
 
 ### Bon à savoir
 - Pas de compte : tout est stocké sur ton téléphone. Change de téléphone ? **Réglages → Exporter**, puis Importer sur le nouveau.
-- Ce que le groupe reçoit : prénom, rang, points, discipline, série, « x/y aujourd'hui ». Rien d'autre.
+- Ce que le groupe reçoit : prénom, rang, points, discipline, série, « x/y aujourd'hui », les tâches cochées aujourd'hui (titre + pilier), le total sur 7 jours, et les messages du chat de groupe (100 derniers, gardés 30 jours). Pas les notes ni le diagnostic.
 - Protection : le classement ne montre jamais les identifiants (personne ne peut modifier la ligne d'un autre), et le serveur limite les appels (40 messages au mentor par heure et par connexion, 1000 appels IA par jour au total — modifiable avec `vercel env add AI_DAILY_LIMIT`). Au-delà, l'app passe en mode secours.
 - Ce que l'IA reçoit : ton profil, tes tâches, tes 5 dernières notes, pour te répondre. Offre gratuite de Gemini : Google peut utiliser ces données pour améliorer ses modèles.
 
@@ -90,6 +90,6 @@ Type every command **in PowerShell, inside the `anti-moldu` folder**.
 
 ### Good to know
 - No accounts: everything lives on your phone. New phone? **Settings → Export**, then Import.
-- What the group receives: first name, rank, points, discipline, streak, "x/y today". Nothing else.
+- What the group receives: first name, rank, points, discipline, streak, "x/y today", tasks checked off today (title + pillar), the 7-day total, and group chat messages (last 100, kept 30 days). Not your notes or diagnostic.
 - Protection: the leaderboard never exposes member ids (nobody can overwrite someone else's row), and the server rate-limits calls (40 mentor messages per hour per connection, 1000 AI calls per day overall — change with `vercel env add AI_DAILY_LIMIT`). Beyond that, the app falls back to offline mode.
 - What the AI receives: your profile, tasks and last 5 notes, to answer you. On Gemini's free tier, Google may use this data to improve its models.

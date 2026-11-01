@@ -3,12 +3,12 @@
 //   L'identifiant (UUID aléatoire, connu seulement de son téléphone) sert donc de clé d'écriture.
 // POST /api/state { group, id, profile } => { ok:true }   (liste blanche stricte)
 import { createHash } from "node:crypto";
-import { allowMethods, readBody, sendJson, handleError, queryParam, redis, clean, BadRequest, rateLimit } from "./_lib.js";
+import { allowMethods, readBody, sendJson, handleError, queryParam, redis, clean, BadRequest, rateLimit, PILLARS } from "./_lib.js";
 
-const GROUP_RE = /^[A-Z0-9]{6}$/;
-const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const GROUP_RE = /^[A-Z0-9]{6}$/;
+export const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_MEMBERS = 50;
-const hashKey = (group) => "am:g:" + group;
+export const hashKey = (group) => "am:g:" + group;
 
 function int(x, lo, hi, dflt) {
   const n = Number(x);
@@ -19,6 +19,22 @@ function int(x, lo, hi, dflt) {
 function cleanName(s) {
   const n = clean(typeof s === "string" ? s : "", 200).replace(/[<>"'`&\\]/g, "").replace(/\s+/g, " ").trim();
   return Array.from(n).slice(0, 30).join("").trim() || "?";
+}
+
+const MAX_DONE = 20;
+
+// Tâches faites aujourd'hui : titre borné + pilier connu, rien d'autre.
+function cleanDone(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const d of list) {
+    if (out.length >= MAX_DONE) break;
+    if (!d || typeof d !== "object") continue;
+    const title = Array.from(clean(typeof d.title === "string" ? d.title : "", 200).replace(/[<>]/g, "")).slice(0, 60).join("").trim();
+    if (!title) continue;
+    out.push({ title, pillar: PILLARS.includes(d.pillar) ? d.pillar : null });
+  }
+  return out;
 }
 
 // Seuls ces champs sont stockés / renvoyés.
@@ -33,11 +49,13 @@ export function sanitizeMember(id, p, updatedAt) {
     streak: int(src.streak, 0, 100000, 0),
     todayDone: int(src.todayDone, 0, 50, 0),
     todayDue: int(src.todayDue, 0, 50, 0),
+    doneToday: cleanDone(src.doneToday),
+    weekDone: int(src.weekDone, 0, 1000, 0),
     updatedAt,
   };
 }
 
-const pubId = (group, id) => createHash("sha256").update(group + ":" + id).digest("hex").slice(0, 12);
+export const pubId = (group, id) => createHash("sha256").update(group + ":" + id).digest("hex").slice(0, 12);
 
 // Version publique d'un membre : sans identifiant.
 function publicMember(group, m, meId) {

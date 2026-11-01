@@ -197,6 +197,13 @@ main.wrap{padding-top:16px;padding-bottom:calc(var(--tabs-h) + 32px + env(safe-a
 .mini{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-top:6px}
 .mini>i{display:block;height:100%;background:var(--good)}
 .member .mp{font-family:var(--display);font-weight:800;font-size:22px;text-align:right}
+.member{cursor:pointer}
+.member:focus-visible{outline:2px solid var(--rank);outline-offset:2px}
+.member .mdetail{grid-column:1/-1;border-top:1px solid var(--line);padding-top:10px;margin-top:2px}
+.mdone{list-style:none;padding:0;margin:6px 0 0;display:flex;flex-direction:column;gap:4px;font-size:14px}
+#gchat{max-height:50vh;overflow-y:auto}
+.msg.peer{align-self:flex-start;background:var(--surface);border:1px solid var(--line);white-space:pre-wrap}
+.msg.user .who{text-align:right}
 
 /* sheet & overlay */
 .sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:70;display:flex;align-items:flex-end;justify-content:center}
@@ -518,7 +525,7 @@ function renderCoachText(text){
 
 /* ---------- state ---------- */
 var state = load();
-var ui = { tab:"today", view:"today", obStep:0, diagPage:0, taskPage:0, obError:"", finishError:"", proposals:{}, choice:{}, groupMode:null, unlock:null, sheet:null, chatBusy:false, avisOpen:false, noteEdit:null, noteDel:null, resetArm:false, group:{status:"idle", members:[]}, morningBusy:false, regressionText:null, regressionBusy:false, settingsPanel:null, importMsg:"", celebrate:null };
+var ui = { tab:"today", view:"today", obStep:0, diagPage:0, taskPage:0, obError:"", finishError:"", proposals:{}, choice:{}, groupMode:null, groupOpen:null, gchat:{status:"idle", messages:[]}, unlock:null, sheet:null, chatBusy:false, avisOpen:false, noteEdit:null, noteDel:null, resetArm:false, group:{status:"idle", members:[]}, morningBusy:false, regressionText:null, regressionBusy:false, settingsPanel:null, importMsg:"", celebrate:null };
 var currentDay = today();
 if (!storageOk && !loadNotice) loadNotice = "blocked";
 
@@ -831,16 +838,16 @@ function groupJoinUI(after){
       el("div", {class:"code", text:g.code}),
       el("div", {class:"row wrap-ok", style:"margin-top:10px"}, [
         el("button", {class:"btn sm", onclick:function(){ copyText(g.code); }, text:t("group_copy")}),
-        el("button", {class:"btn sm ghost", onclick:function(){ state.group = null; save(); ui.group = {status:"idle", members:[]}; after(); }, text:t("group_leave")})
+        el("button", {class:"btn sm ghost", onclick:function(){ state.group = null; save(); ui.group = {status:"idle", members:[]}; ui.gchat = {status:"idle", messages:[]}; gchatDraft = ""; after(); }, text:t("group_leave")})
       ])
     ]));
     return box;
   }
   var codeIn = el("input", {class:"in", maxlength:"6", autocapitalize:"characters", placeholder:"ABC123", "aria-label":t("group_code_placeholder"), style:"text-transform:uppercase;letter-spacing:.15em;font-weight:700"});
   var err = el("p", {class:"err"});
-  function join(){ var c = codeIn.value.toUpperCase().replace(/[^A-Z0-9]/g,""); if (!/^[A-Z0-9]{6}$/.test(c)){ err.textContent = t("group_code_invalid"); return; } state.group = {code:c}; save(); pushGroup(true); after(); }
+  function join(){ var c = codeIn.value.toUpperCase().replace(/[^A-Z0-9]/g,""); if (!/^[A-Z0-9]{6}$/.test(c)){ err.textContent = t("group_code_invalid"); return; } state.group = {code:c}; save(); ui.gchat = {status:"idle", messages:[]}; pushGroup(true); fetchGroupChat(); after(); }
   codeIn.addEventListener("keydown", function(e){ if (e.key === "Enter") join(); });
-  box.appendChild(el("button", {class:"btn primary block", onclick:function(){ state.group = {code:genCode()}; save(); pushGroup(true); after(); }, text:t("group_create")}));
+  box.appendChild(el("button", {class:"btn primary block", onclick:function(){ state.group = {code:genCode()}; save(); ui.gchat = {status:"idle", messages:[]}; pushGroup(true); fetchGroupChat(); after(); }, text:t("group_create")}));
   box.appendChild(el("div", {class:"row"}, [el("div", {class:"grow"}, codeIn), el("button", {class:"btn", onclick:join, text:t("group_join_btn")})]));
   box.appendChild(err);
   return box;
@@ -917,7 +924,7 @@ function renderMain(){
   if (ui.celebrate != null) frag.appendChild(renderCelebrate());
   return frag;
 }
-function go(tab){ ui.tab = tab; render(); window.scrollTo(0,0); if (tab === "group") refreshGroup(); }
+function go(tab){ ui.tab = tab; render(); window.scrollTo(0,0); if (tab === "group"){ refreshGroup(); fetchGroupChat(); startGroupPolling(); } }
 
 /* --- Today --- */
 function rankLetter(i){ var info = L.rankInfo(i); return el("div", {class:"letter"}, [info.letter, info.sub ? el("sup", {text: info.sub === "-" ? "−" : info.sub}) : null]); }
@@ -1254,9 +1261,18 @@ function scrollChat(){ try { var c = document.getElementById("chat"); if (c && c
 
 /* --- Group --- */
 var pushTimer = null;
+function myDoneToday(){
+  var lg = state.log[today()] || {};
+  return state.tasks.filter(function(tk){ return !!lg[tk.id]; }).slice(0, 20).map(function(tk){ return { title: str(taskTitle(tk), 60), pillar: tk.pillar }; });
+}
+function myWeekDone(){
+  var n = 0, td = today();
+  for (var i = 0; i < 7; i++){ var lg = state.log[L.addDays(td, -i)]; if (isObj(lg)) Object.keys(lg).forEach(function(k){ if (lg[k]) n++; }); }
+  return n;
+}
 function myProfile(){
   var p = { done:0, due:0 }; try { p = L.todayProgress(state, today()); } catch(e){}
-  return { name: str(state.user.name, 30), rankIndex: state.rank.index, points: livePts(), discipline: discipline(), streak: streak(), todayDone: p.done, todayDue: p.due };
+  return { name: str(state.user.name, 30), rankIndex: state.rank.index, points: livePts(), discipline: discipline(), streak: streak(), todayDone: p.done, todayDue: p.due, doneToday: myDoneToday(), weekDone: myWeekDone() };
 }
 function pushGroup(thenFetch){
   if (!state.group || !state.onboardingDone) return Promise.resolve(null);
@@ -1297,18 +1313,104 @@ function viewGroup(){
   if (ui.group.status === "offline") box.appendChild(el("div", {class:"banner", style:"margin-top:12px", role:"status", text:t("group_unavailable")}));
   var list = el("section", {style:"margin-top:12px"});
   members.forEach(function(m){
-    var ri = clamp(Math.round(m.rankIndex)||0, 0, 12), info = L.rankInfo(ri), isMe = m.me === true;
+    var ri = clamp(Math.round(m.rankIndex)||0, 0, 12), isMe = m.me === true, key = isMe ? "me" : str(m.pub, 20);
     var due = Math.max(0, Number(m.todayDue)||0), done = clamp(Number(m.todayDone)||0, 0, due || 0);
-    list.appendChild(el("div", {class:"member" + (isMe ? " me" : "")}, [
+    var open = ui.groupOpen === key;
+    var row = el("div", {class:"member" + (isMe ? " me" : "") + (open ? " open" : ""), role:"button", tabindex:"0", "aria-expanded":String(open), onclick:function(){ ui.groupOpen = open ? null : key; render(); }}, [
       el("div", {class:"ml", style:"color:" + rankColor(ri), text:rLabel(ri)}),
       el("div", {style:"min-width:0"}, [el("div", {class:"mn", text: str(m.name, 30) + (isMe ? " (" + t("group_you") + ")" : "")}), el("div", {class:"ms", text: t("gauge_discipline") + " " + (m.discipline == null ? "—" : t("percent_value", {n:m.discipline})) + ", " + t("streak") + " " + (Number(m.streak)||0)})]),
       el("div", {class:"mp", text: fmt(m.points)}),
-      el("div", {class:"mt"}, [el("div", {class:"ms", text: t("group_today", {done:done, due:due})}), el("div", {class:"mini"}, el("i", {style:"width:" + (due ? Math.round(done/due*100) : 0) + "%"}))])
-    ]));
+      el("div", {class:"mt"}, [el("div", {class:"ms", text: t("group_today", {done:done, due:due})}), el("div", {class:"mini"}, el("i", {style:"width:" + (due ? Math.round(done/due*100) : 0) + "%"}))]),
+      open ? memberDetail(m, ri) : null
+    ]);
+    row.addEventListener("keydown", function(e){ if (e.key === "Enter" || e.key === " "){ e.preventDefault(); row.click(); } });
+    list.appendChild(row);
   });
   box.appendChild(list);
-  box.appendChild(el("button", {class:"btn block ghost", style:"margin-top:14px", text:t("group_refresh"), onclick:function(){ refreshGroup(); render(); }}));
+  box.appendChild(el("button", {class:"btn block ghost", style:"margin-top:14px", text:t("group_refresh"), onclick:function(){ refreshGroup(); fetchGroupChat(); render(); }}));
+  box.appendChild(groupChatSection());
   return box;
+}
+function memberDetail(m, ri){
+  var doneList = Array.isArray(m.doneToday) ? m.doneToday.filter(isObj) : [];
+  return el("div", {class:"mdetail"}, [
+    el("div", {class:"ms", text: rankName(ri) + " · " + t("group_points_label", {n: fmt(m.points)})}),
+    el("div", {class:"ms", text: t("group_week_done", {n: Number(m.weekDone)||0})}),
+    el("p", {class:"small", style:"margin-top:10px;font-weight:700", text:t("group_done_today")}),
+    doneList.length
+      ? el("ul", {class:"mdone"}, doneList.map(function(d){ var pi = pillarInfo(d.pillar); return el("li", {text: (d.pillar ? pi.emoji + " " : "✓ ") + str(d.title, 60)}); }))
+      : el("p", {class:"ms", text:t("group_done_none")})
+  ]);
+}
+
+/* --- Group chat --- */
+var gchatDraft = "", gchatTimer = null, gchatTick = 0;
+function fetchGroupChat(){
+  if (!state.group || !state.onboardingDone) return;
+  var code = state.group.code;
+  api("/api/chat?group=" + encodeURIComponent(code) + "&me=" + encodeURIComponent(state.user.id), null, 15000).then(function(r){
+    if (!state.group || state.group.code !== code) return;
+    var prev = ui.gchat, next;
+    if (r && Array.isArray(r.messages)) next = { status:"ok", messages: r.messages.filter(isObj), sending: prev.sending };
+    else next = { status: prev.status === "ok" ? "ok" : "offline", messages: prev.messages, sending: prev.sending };
+    var changed = next.status !== prev.status || next.messages.length !== prev.messages.length || (next.messages.length && next.messages[next.messages.length-1].at !== prev.messages[prev.messages.length-1].at);
+    ui.gchat = next;
+    if (changed && ui.tab === "group") updateGroupChat(true);
+  });
+}
+function sendGroupChat(){
+  var v = gchatDraft.trim();
+  if (!v || !state.group || ui.gchat.sending) return;
+  ui.gchat.sending = true; updateGroupChat(false);
+  var code = state.group.code;
+  // la fiche doit exister côté serveur avant d'écrire
+  pushGroup(false).then(function(){ return api("/api/chat", { group: code, id: state.user.id, text: v }, 15000); }).then(function(r){
+    ui.gchat.sending = false;
+    if (r && r.ok){ gchatDraft = ""; ui.gchat.error = false; var ta = document.getElementById("gchat-in"); if (ta) ta.value = ""; fetchGroupChat(); }
+    else ui.gchat.error = true;
+    updateGroupChat(false);
+  });
+}
+function gchatMessages(){
+  var c = el("div", {class:"chat", id:"gchat", "aria-live":"polite"});
+  var g = ui.gchat;
+  if (g.status === "offline") c.appendChild(el("div", {class:"banner", role:"status", text:t("gchat_unavailable")}));
+  else if (g.status !== "ok") c.appendChild(el("p", {class:"muted small"}, [el("span", {class:"spin"}), " ", t("loading")]));
+  else if (!g.messages.length) c.appendChild(el("p", {class:"muted small", text:t("gchat_empty")}));
+  g.messages.forEach(function(m){
+    var time = ""; try { if (m.at) time = new Date(m.at).toLocaleTimeString(lang() === "en" ? "en-GB" : "fr-FR", {hour:"2-digit", minute:"2-digit"}); } catch(e){}
+    if (m.me === true) c.appendChild(el("div", {class:"msg user"}, [el("div", {class:"who", text: t("group_you") + (time ? " · " + time : "")}), el("div", {text: str(m.text, 500)})]));
+    else c.appendChild(el("div", {class:"msg peer"}, [el("div", {class:"who", text: str(m.name, 30) + (time ? " · " + time : "")}), el("div", {text: str(m.text, 500)})]));
+  });
+  if (g.error) c.appendChild(el("p", {class:"small", style:"color:var(--danger)", role:"alert", text:t("gchat_send_error")}));
+  return c;
+}
+function groupChatSection(){
+  var s = el("section", {class:"sect", id:"gchat-sect"}, [el("h2", {text:t("gchat_title")})]);
+  s.appendChild(gchatMessages());
+  var ta = el("textarea", {class:"in grow", id:"gchat-in", placeholder:t("gchat_placeholder"), "aria-label":t("gchat_placeholder"), maxlength:"500", value:gchatDraft, rows:"1"});
+  ta.addEventListener("input", function(){ gchatDraft = ta.value; });
+  ta.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendGroupChat(); } });
+  s.appendChild(el("div", {class:"composer"}, [ta, el("button", {class:"btn primary", id:"gchat-send", disabled:!!ui.gchat.sending, text:t("mentor_send"), onclick:sendGroupChat})]));
+  return s;
+}
+// Met à jour seulement la liste des messages : le champ de saisie garde le focus et le texte.
+function updateGroupChat(scroll){
+  var old = document.getElementById("gchat");
+  if (!old) return;
+  var atBottom = old.scrollHeight - old.scrollTop - old.clientHeight < 40;
+  var fresh = gchatMessages();
+  old.parentNode.replaceChild(fresh, old);
+  var btn = document.getElementById("gchat-send"); if (btn) btn.disabled = !!ui.gchat.sending;
+  if (scroll && atBottom) try { fresh.scrollTop = fresh.scrollHeight; } catch(e){}
+}
+function startGroupPolling(){
+  if (gchatTimer) return;
+  gchatTimer = setInterval(function(){
+    if (ui.tab !== "group" || !state.group || document.hidden) return;
+    fetchGroupChat();
+    if (++gchatTick % 4 === 0) refreshGroup(true);
+  }, 8000);
 }
 
 /* --- Settings --- */

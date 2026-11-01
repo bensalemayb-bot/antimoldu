@@ -7,6 +7,7 @@ const lib = await import("../api/_lib.js");
 const coach = (await import("../api/coach.js")).default;
 const tasks = (await import("../api/tasks.js")).default;
 const state = (await import("../api/state.js")).default;
+const chat = (await import("../api/chat.js")).default;
 
 const ENV_KEYS = [
   "GEMINI_API_KEY", "GEMINI_MODEL", "GROQ_API_KEY", "GROQ_MODEL",
@@ -25,6 +26,7 @@ let groqCalls = [];
 let groqReply = null;
 let store = new Map(); // key -> Map(field -> value)
 let counters = new Map(); // key -> nombre (INCR)
+let lists = new Map(); // key -> tableau (RPUSH/LRANGE)
 
 function redisExec(cmd) {
   const [op, key, ...args] = cmd;
@@ -45,6 +47,9 @@ function redisExec(cmd) {
     case "HEXISTS": return h.has(args[0]) ? 1 : 0;
     case "HDEL": { const had = h.delete(args[0]); return had ? 1 : 0; }
     case "EXPIRE": return 1;
+    case "RPUSH": { const l = lists.get(key) || []; l.push(...args.map(String)); lists.set(key, l); return l.length; }
+    case "LTRIM": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; lists.set(key, l.slice(s, e + 1)); return "OK"; }
+    case "LRANGE": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; return l.slice(s, e + 1); }
     case "INCR": { const n = (counters.get(key) || 0) + 1; counters.set(key, n); return n; }
     default: throw new Error("unsupported " + op);
   }
@@ -87,7 +92,7 @@ function geminiText(text) {
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
-  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map();
+  geminiCalls = []; redisCalls = []; geminiReply = null; groqCalls = []; groqReply = null; store = new Map(); counters = new Map(); lists = new Map();
   globalThis.fetch = fakeFetch;
 });
 afterEach(() => {
@@ -500,7 +505,7 @@ test("state: POST then GET returns member, sorted by rank then points", async ()
   assert.equal(r.headers["cache-control"], "no-store");
   assert.deepEqual(r.json.members.map((m) => m.name), ["Max", "Léa", "Sam"]);
   const m = r.json.members.find((x) => x.me === true);
-  assert.deepEqual(Object.keys(m).sort(), ["discipline", "me", "name", "points", "pub", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt"]);
+  assert.deepEqual(Object.keys(m).sort(), ["discipline", "doneToday", "me", "name", "points", "pub", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt", "weekDone"]);
   assert.equal(r.json.members.filter((x) => x.me).length, 1);
   assert.match(m.pub, /^[0-9a-f]{12}$/);
   // les identifiants (clés d'écriture) ne sortent jamais
@@ -542,7 +547,7 @@ test("state: whitelist + bounds (name 500 chars, html, extra fields, out-of-rang
   const raw = store.get("am:g:ABC123").get("u1");
   assert.ok(!raw.includes("Secret task") && !raw.includes("secret note") && !raw.includes("objectives") && !raw.includes("tasks"));
   const s = JSON.parse(raw);
-  assert.deepEqual(Object.keys(s).sort(), ["discipline", "id", "name", "points", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt"]);
+  assert.deepEqual(Object.keys(s).sort(), ["discipline", "doneToday", "id", "name", "points", "rankIndex", "streak", "todayDone", "todayDue", "updatedAt", "weekDone"]);
   assert.ok(s.name.length <= 30);
   assert.ok(!s.name.includes("<"));
   assert.equal(s.rankIndex, 12);
@@ -612,6 +617,83 @@ test("state: POST body as stream works (raw http server)", async () => {
   withUpstash();
   const r = await call(state, { body: { group: "ABC123", id: "u1", profile: profile() }, bodyMode: "stream" });
   assert.equal(r.status, 200);
+});
+
+test("state: doneToday bounded (20 items, 60 chars, no html, known pillars only), weekDone bounded", async () => {
+  withUpstash();
+  const doneToday = [
+    { title: "<b>Courir</b> " + "x".repeat(200), pillar: "corps" },
+    { title: "Lire", pillar: "hack" },
+    { title: "", pillar: "focus" },
+    "junk",
+    ...Array.from({ length: 30 }, (_, i) => ({ title: "T" + i, pillar: "focus", secret: "leak" })),
+  ];
+  await call(state, { body: { group: "ABC123", id: "u1", profile: profile({ doneToday, weekDone: 5000 }) } });
+  const s = JSON.parse(store.get("am:g:ABC123").get("u1"));
+  assert.equal(s.doneToday.length, 20);
+  assert.ok(Array.from(s.doneToday[0].title).length <= 60);
+  assert.ok(!s.doneToday[0].title.includes("<"));
+  assert.equal(s.doneToday[0].pillar, "corps");
+  assert.equal(s.doneToday[1].pillar, null);
+  assert.ok(!JSON.stringify(s).includes("leak"));
+  assert.equal(s.weekDone, 1000);
+});
+
+// ================= /api/chat =================
+test("chat: member posts, everyone reads; ids never leak, name comes from the member record", async () => {
+  withUpstash();
+  await call(state, { body: { group: "ABC123", id: "u1", profile: profile({ name: "Sam" }) } });
+  await call(state, { body: { group: "ABC123", id: "u2", profile: profile({ name: "Léa" }) } });
+  let r = await call(chat, { body: { group: "ABC123", id: "u1", text: "  Salut la team\n\n\n\non y va  ", name: "Faux" } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json, { ok: true });
+  await call(chat, { body: { group: "ABC123", id: "u2", text: "Go" } });
+  r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123&me=u2" });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers["cache-control"], "no-store");
+  assert.deepEqual(r.json.messages.map((m) => [m.name, m.text, m.me]), [["Sam", "Salut la team\n\non y va", false], ["Léa", "Go", true]]);
+  assert.deepEqual(Object.keys(r.json.messages[0]).sort(), ["at", "me", "name", "pub", "text"]);
+  assert.match(r.json.messages[0].pub, /^[0-9a-f]{12}$/);
+  assert.ok(!r.raw.includes('"u1"') && !r.raw.includes('"u2"'));
+  assertClean(r);
+});
+
+test("chat: non-member, bad group/id, empty text => 400; text bounded to 500", async () => {
+  withUpstash();
+  let r = await call(chat, { body: { group: "ABC123", id: "ghost", text: "hello" } });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, "not_member");
+  await call(state, { body: { group: "ABC123", id: "u1", profile: profile() } });
+  r = await call(chat, { body: { group: "abc", id: "u1", text: "x" } });
+  assert.equal(r.json.error, "bad_group");
+  r = await call(chat, { body: { group: "ABC123", id: "a b", text: "x" } });
+  assert.equal(r.json.error, "bad_id");
+  r = await call(chat, { body: { group: "ABC123", id: "u1", text: "   " } });
+  assert.equal(r.json.error, "missing_text");
+  r = await call(chat, { method: "GET", url: "/api/chat?group=nope" });
+  assert.equal(r.status, 400);
+  await call(chat, { body: { group: "ABC123", id: "u1", text: "y".repeat(2000) } });
+  r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  assert.equal(r.json.messages[0].text.length, 500);
+});
+
+test("chat: keeps the last 100, returns the last 50 in order", async () => {
+  withUpstash();
+  await call(state, { body: { group: "ABC123", id: "u1", profile: profile() } });
+  for (let i = 0; i < 120; i++) await call(chat, { body: { group: "ABC123", id: "u1", text: "m" + i } });
+  assert.equal(lists.get("am:gc:ABC123").length, 100);
+  const r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  assert.equal(r.json.messages.length, 50);
+  assert.equal(r.json.messages[0].text, "m70");
+  assert.equal(r.json.messages[49].text, "m119");
+});
+
+test("chat: storage not configured => 503; wrong method => 405", async () => {
+  let r = await call(chat, { method: "GET", url: "/api/chat?group=ABC123" });
+  assert.equal(r.status, 503);
+  assert.deepEqual(r.json, { error: "storage_unavailable" });
+  r = await call(chat, { method: "DELETE" });
+  assert.equal(r.status, 405);
 });
 
 // ================= limites d'appels =================
