@@ -1,4 +1,5 @@
-// POST /api/coach — le Mentor. Body { lang, mode, context, chat?, message? } => { text }
+// POST /api/coach — le Mentor. Body { lang, mode, style?, context, chat?, message? } => { text }
+//   style : "brutal" pour le ton sans pitié, sinon ton cash par défaut.
 import { allowMethods, readBody, sendJson, handleError, callGemini, clean, cleanMultiline, BadRequest, rateLimit, aiDailyQuota } from "./_lib.js";
 
 export const MODES = ["morning", "boost", "bilan", "avis", "regression", "chat"];
@@ -8,6 +9,22 @@ const MAX_CHAT = 10;
 const MAX_CHAT_ITEM = 1000;
 
 const TOKENS = { morning: 350, boost: 200, bilan: 900, avis: 700, regression: 600, chat: 600 };
+// Maximum de mots annoncé dans chaque mode (MODE_PROMPT) ; au-delà d'une petite marge, on coupe.
+const MAX_WORDS = { morning: 80, boost: 50, bilan: 200, avis: 150, regression: 150, chat: 150 };
+
+// Certains modèles dépassent la longueur demandée : on coupe à la dernière fin de phrase sous la limite.
+export function trimWords(text, maxWords) {
+  const words = text.split(/(\s+)/);
+  let count = 0;
+  let i = 0;
+  for (; i < words.length; i++) {
+    if (/\S/.test(words[i]) && ++count > maxWords) break;
+  }
+  if (i >= words.length) return text;
+  const cut = words.slice(0, i).join("").trimEnd();
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf(".\n"), cut.lastIndexOf("!\n"), cut.lastIndexOf("?\n"), /[.!?…»"]$/.test(cut) ? cut.length - 1 : -1);
+  return end > cut.length / 3 ? cut.slice(0, end + 1).trim() : cut + "…";
+}
 const TEMPERATURE = { morning: 0.9, boost: 0.95, bilan: 0.6, avis: 0.6, regression: 0.6, chat: 0.75 };
 
 const PERSONA = {
@@ -62,6 +79,20 @@ For "What changed since the last review", compare with lastBilan in the context 
   },
 };
 
+// Ton « sans pitié », choisi par la personne dans l'app : on retourne ses propres douleurs contre ses excuses.
+const BRUTAL = {
+  fr: `Ton SANS PITIÉ (choisi volontairement par la personne) : tu frappes fort, ça doit piquer.
+Ressors ses propres mots du contexte : sa douleur (pain), ce qu'elle ressent (painEmotions), ses dissonances (dissonance), ce qu'elle a déjà abandonné (abandoned), son intention. Cite-les entre guillemets (« Tu m'as dit : … ») et retourne-les contre ses excuses du jour.
+Mets-la face à ce qu'elle redoute : à quoi ressemble sa vie dans 5 ans si elle continue à lâcher comme aujourd'hui. Sarcasme et phrases qui font mal autorisés.
+Limites absolues, même dans ce ton : jamais d'insulte sur le physique, l'origine, la religion, la famille, la santé ou la valeur de la personne ; jamais de mépris gratuit ; jamais d'étiquette sur la personne (« raté », « nul », « minable », « bon à rien », « loser », « fantôme »…), ni au présent, ni au futur (« tu seras un bon à rien »), ni entre guillemets : ce sont ses actes qui sont nuls, pas elle (« tu lâches », « tu repousses », oui ; « tu es un raté », non) ; jamais rien qui encourage à se faire du mal. La règle sur la détresse grave passe avant ce ton.
+Ce ton ne change pas la longueur : respecte strictement le maximum de mots du mode.`,
+  en: `NO-MERCY tone (chosen on purpose by the person): hit hard, it has to sting.
+Bring back their own words from the context: their pain (pain), what they feel (painEmotions), their dissonances (dissonance), what they already gave up on (abandoned), their intention. Quote them ("You told me: …") and turn them against today's excuses.
+Make them face what they dread: what their life looks like in 5 years if they keep quitting like today. Sarcasm and lines that hurt are allowed.
+Absolute limits, even in this tone: never insult their body, origin, religion, family, health or worth; no gratuitous contempt; never label the person ("loser", "failure", "pathetic", "good-for-nothing"…), not in the present, not in the future ("you'll be a loser"), not in quotes: their actions are weak, not them ("you quit", "you put it off": yes; "you're a failure": no); nothing that encourages self-harm. The serious-distress rule overrides this tone.
+This tone does not change length: strictly respect the mode's word limit.`,
+};
+
 // Empêche l'utilisateur de fermer/ouvrir nos balises.
 export function neutralizeTags(s) {
   return String(s).replace(/<(\/?)\s*(context|history|message)/gi, "‹$1$2");
@@ -99,7 +130,8 @@ export default async function handler(req, res) {
     const message = cleanMultiline(typeof body.message === "string" ? body.message : "", MAX_MESSAGE);
     if ((mode === "chat" || mode === "avis") && !message) throw new BadRequest("missing_message");
 
-    const system = `${PERSONA[lang]}\n\n${MODE_PROMPT[lang][mode]}`;
+    const style = body.style === "brutal" ? `\n\n${BRUTAL[lang]}` : "";
+    const system = `${PERSONA[lang]}${style}\n\n${MODE_PROMPT[lang][mode]}`;
     let user = `<context>\n${contextText(body.context)}\n</context>`;
     const hist = historyText(body.chat);
     if (hist) user += `\n<history>\n${hist}\n</history>`;
@@ -107,7 +139,7 @@ export default async function handler(req, res) {
 
     await aiDailyQuota();
     const raw = await callGemini({ system, user, temperature: TEMPERATURE[mode], maxOutputTokens: TOKENS[mode] });
-    const text = cleanMultiline(raw, 4000);
+    const text = trimWords(cleanMultiline(raw, 4000), Math.round(MAX_WORDS[mode] * 1.2));
     if (!text) return sendJson(res, 503, { error: "ai_unavailable" });
     return sendJson(res, 200, { text });
   } catch (err) {

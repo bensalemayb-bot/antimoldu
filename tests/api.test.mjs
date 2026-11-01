@@ -701,6 +701,37 @@ test("chat: storage not configured => 503; wrong method => 405", async () => {
   assert.equal(r.status, 405);
 });
 
+test("coach: style brutal adds the no-mercy prompt (fr/en) and keeps safety rules; default and unknown style don't", async () => {
+  withGemini();
+  geminiReply = geminiText("Debout.");
+  await call(coach, { body: { lang: "fr", mode: "boost", style: "brutal", context: { pain: "Je me sens nul devant ma famille" } } });
+  let sys = geminiCalls.at(-1).body.systemInstruction.parts[0].text;
+  assert.match(sys, /SANS PITIÉ/);
+  assert.match(sys, /détresse grave/);
+  assert.match(sys, /jamais d'insulte sur le physique/);
+  assert.match(geminiCalls.at(-1).body.contents[0].parts[0].text, /Je me sens nul devant ma famille/);
+  await call(coach, { body: { lang: "en", mode: "chat", style: "brutal", message: "hi", context: {} } });
+  assert.match(geminiCalls.at(-1).body.systemInstruction.parts[0].text, /NO-MERCY/);
+  for (const style of [undefined, "cash", "<script>"]) {
+    await call(coach, { body: { lang: "fr", mode: "boost", style, context: {} } });
+    assert.doesNotMatch(geminiCalls.at(-1).body.systemInstruction.parts[0].text, /SANS PITIÉ/);
+  }
+});
+
+test("coach: replies over the word limit are cut at the last sentence end", async () => {
+  const { trimWords } = await import("../api/coach.js");
+  assert.equal(trimWords("Court. Très court.", 50), "Court. Très court.");
+  const long = Array.from({ length: 20 }, (_, i) => `Phrase numéro ${i} ici.`).join(" ");
+  const cut = trimWords(long, 10);
+  assert.ok(cut.split(/\s+/).length <= 10);
+  assert.ok(cut.endsWith("."));
+  assert.equal(trimWords("mot ".repeat(30).trim(), 5), "mot mot mot mot mot…");
+  withGemini();
+  geminiReply = geminiText(long);
+  const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
+  assert.ok(r.json.text.split(/\s+/).length <= 60);
+});
+
 // ================= /api/account =================
 const appState = (over = {}) => ({ user: { id: "u-123", name: "Ben" }, tasks: [{ id: "t1", title: "50 pompes" }], onboardingDone: true, ...over });
 
