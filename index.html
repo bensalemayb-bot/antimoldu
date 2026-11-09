@@ -981,6 +981,11 @@ function viewToday(){
   try { nx = L.nextThreshold(idx); } catch(e){}
   var dsc = discipline(), pts = livePts(), days = daysNow(), stk = streak();
   var box = el("div");
+  // Pas de compte : le profil n'existe que dans ce navigateur.
+  if (!session) box.appendChild(el("div", {class:"banner", role:"status", style:"display:flex;align-items:center;gap:10px;flex-wrap:wrap"}, [
+    el("span", {style:"flex:1 1 200px", text:t("account_banner")}),
+    el("button", {class:"btn primary", text:t("account_banner_cta"), onclick:function(){ go("settings"); }})
+  ]));
   box.appendChild(el("section", {class:"rankcard", "aria-label":t("rank_card_title")}, [
     el("div", {class:"scope"}, [el("div", {class:"aura"}), el("div", {class:"ring"}), el("div", {class:"ring2"}), rankLetter(idx)]),
     el("div", {}, [
