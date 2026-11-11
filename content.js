@@ -208,6 +208,9 @@
 
       // groupe
       group_title: "Groupe",
+      notif_banner: "Active les notifs : messages du groupe + rappel le soir s'il te reste des tâches.",
+      notif_enable_short: "Activer",
+      notif_later: "Plus tard",
       notif_title: "Notifications",
       notif_pitch: "Reçois les messages du groupe et un rappel le soir s'il te reste des tâches.",
       notif_enable: "Activer les notifications",
@@ -590,6 +593,9 @@
       mentor_empty: "Ask a question or request a review.",
 
       group_title: "Group",
+      notif_banner: "Turn on notifications: group messages + an evening reminder if tasks are left.",
+      notif_enable_short: "Turn on",
+      notif_later: "Later",
       notif_title: "Notifications",
       notif_pitch: "Get group messages and an evening reminder if you still have tasks left.",
       notif_enable: "Turn on notifications",

@@ -992,6 +992,7 @@ function viewToday(){
     el("span", {style:"flex:1 1 200px", text:t("account_banner")}),
     el("button", {class:"btn primary", text:t("account_banner_cta"), onclick:function(){ go("settings"); }})
   ]));
+  var nb = notifBanner(); if (nb) box.appendChild(nb);
   box.appendChild(el("section", {class:"rankcard", "aria-label":t("rank_card_title")}, [
     el("div", {class:"scope"}, [el("div", {class:"aura"}), el("div", {class:"ring"}), el("div", {class:"ring2"}), rankLetter(idx)]),
     el("div", {}, [
@@ -1556,7 +1557,7 @@ function syncPush(){
 }
 function enableNotifs(){
   ui.notifErr = "";
-  function fail(k){ ui.notifBusy = false; ui.notifErr = t(k); if (ui.tab === "settings") render(); }
+  function fail(k){ ui.notifBusy = false; ui.notifErr = t(k); rerenderKeepScroll(); }
   var asked;
   try { asked = Notification.requestPermission(); } catch(e){ return fail("notif_error"); }
   ui.notifBusy = true; render();
@@ -1571,7 +1572,7 @@ function enableNotifs(){
         return api("/api/push", pushBody(sub), 15000).then(function(ok){
           if (!ok) return fail("notif_error");
           var p = notifPrefs(); p.on = true; setNotifPrefs(p);
-          ui.notifBusy = false; toast("", t("notif_enabled")); if (ui.tab === "settings") render();
+          ui.notifBusy = false; toast("", t("notif_enabled")); rerenderKeepScroll();
         });
       });
     });
@@ -1582,6 +1583,25 @@ function disableNotifs(){
   api("/api/push", { action:"unsubscribe", id: state.user.id }, 15000);
   try { if (swReg) swReg.pushManager.getSubscription().then(function(s){ if (s) s.unsubscribe(); }, function(){}); } catch(e){}
   render();
+}
+function rerenderKeepScroll(){ var y = window.scrollY; render(); window.scrollTo(0, y); }
+// Bannière à l'ouverture de l'app : proposer d'activer les notifs (ou expliquer l'écran d'accueil sur iPhone).
+var NOTIF_SNOOZE = "am_notif_snooze";
+function notifBanner(){
+  var snooze = 0; try { snooze = Number(localStorage.getItem(NOTIF_SNOOZE)) || 0; } catch(e){}
+  if (Date.now() < snooze) return null;
+  var later = el("button", {class:"btn ghost", text:t("notif_later"), onclick:function(){ try { localStorage.setItem(NOTIF_SNOOZE, String(Date.now() + 3 * 864e5)); } catch(e){} rerenderKeepScroll(); }});
+  var wrap = {class:"banner", role:"status", style:"display:flex;align-items:center;gap:10px;flex-wrap:wrap"};
+  if (!pushSupported){
+    if (!(isIOS && !isStandalone)) return null;
+    return el("div", wrap, [el("span", {style:"flex:1 1 200px", text:t("notif_ios_hint")}), later]);
+  }
+  if ((notifPrefs().on && Notification.permission === "granted") || Notification.permission === "denied") return null;
+  return el("div", wrap, [
+    el("span", {style:"flex:1 1 200px", text: ui.notifErr || t("notif_banner")}),
+    el("button", {class:"btn primary", disabled: !!ui.notifBusy, text: ui.notifBusy ? t("notif_busy") : t("notif_enable_short"), onclick: enableNotifs}),
+    later
+  ]);
 }
 function notifSection(){
   var s = el("section", {class:"sect"}, [el("h2", {text:t("notif_title")})]);
