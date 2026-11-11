@@ -637,20 +637,19 @@ test("state: POST body as stream works (raw http server)", async () => {
   assert.equal(r.status, 200);
 });
 
-test("state: doneToday bounded (20 items, 60 chars, no html, known pillars only), weekDone bounded", async () => {
+test("state: doneToday bounded (20 items, pillar only, never the title), weekDone bounded", async () => {
   withUpstash();
   const doneToday = [
     { title: "<b>Courir</b> " + "x".repeat(200), pillar: "corps" },
     { title: "Lire", pillar: "hack" },
-    { title: "", pillar: "focus" },
     "junk",
     ...Array.from({ length: 30 }, (_, i) => ({ title: "T" + i, pillar: "focus", secret: "leak" })),
   ];
   await call(state, { body: { group: "ABC123", id: "u1", profile: profile({ doneToday, weekDone: 5000 }) } });
   const s = JSON.parse(store.get("am:g:ABC123").get("u1"));
   assert.equal(s.doneToday.length, 20);
-  assert.ok(Array.from(s.doneToday[0].title).length <= 60);
-  assert.ok(!s.doneToday[0].title.includes("<"));
+  assert.deepEqual(Object.keys(s.doneToday[0]), ["pillar"]);
+  assert.ok(!JSON.stringify(s).includes("Courir"));
   assert.equal(s.doneToday[0].pillar, "corps");
   assert.equal(s.doneToday[1].pillar, null);
   assert.ok(!JSON.stringify(s).includes("leak"));

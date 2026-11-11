@@ -1325,7 +1325,7 @@ function scrollChat(){ try { var c = document.getElementById("chat"); if (c && c
 var pushTimer = null;
 function myDoneToday(){
   var lg = state.log[today()] || {};
-  return state.tasks.filter(function(tk){ return !!lg[tk.id]; }).slice(0, 20).map(function(tk){ return { title: str(taskTitle(tk), 60), pillar: tk.pillar }; });
+  return state.tasks.filter(function(tk){ return !!lg[tk.id]; }).slice(0, 20).map(function(tk){ return { pillar: tk.pillar }; });
 }
 function myWeekDone(){
   var n = 0, td = today();
@@ -1427,6 +1427,12 @@ function viewGroup(){
   box.appendChild(groupChatSection());
   return box;
 }
+// Le groupe ne voit que le type de tâche (pilier) et combien, jamais la tâche elle-même.
+function doneByPillar(list){
+  var out = [], idx = {};
+  list.forEach(function(d){ var k = PILLARS.indexOf(d.pillar) >= 0 ? d.pillar : ""; if (!(k in idx)){ idx[k] = out.length; out.push({ pillar: k || null, n: 0 }); } out[idx[k]].n++; });
+  return out;
+}
 function memberDetail(m, ri){
   var doneList = Array.isArray(m.doneToday) ? m.doneToday.filter(isObj) : [];
   return el("div", {class:"mdetail"}, [
@@ -1434,7 +1440,7 @@ function memberDetail(m, ri){
     el("div", {class:"ms", text: t("group_week_done", {n: Number(m.weekDone)||0})}),
     el("p", {class:"small", style:"margin-top:10px;font-weight:700", text:t("group_done_today")}),
     doneList.length
-      ? el("ul", {class:"mdone"}, doneList.map(function(d){ var pi = pillarInfo(d.pillar); return el("li", {text: (d.pillar ? pi.emoji + " " : "✓ ") + str(d.title, 60)}); }))
+      ? el("ul", {class:"mdone"}, doneByPillar(doneList).map(function(g){ return el("li", {text: (g.pillar ? pillarInfo(g.pillar).emoji + " " + pillarName(g.pillar) : "✓ " + t("group_done_other")) + (g.n > 1 ? " ×" + g.n : "")}); }))
       : el("p", {class:"ms", text:t("group_done_none")}),
     ui.group.isOwner && m.me !== true && typeof m.pub === "string" ? kickButton(m) : null
   ]);

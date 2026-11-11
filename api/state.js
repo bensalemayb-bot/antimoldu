@@ -27,16 +27,14 @@ function cleanName(s) {
 
 const MAX_DONE = 20;
 
-// Tâches faites aujourd'hui : titre borné + pilier connu, rien d'autre.
+// Tâches faites aujourd'hui : seulement le type (pilier), jamais le titre de la tâche.
 function cleanDone(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const d of list) {
     if (out.length >= MAX_DONE) break;
     if (!d || typeof d !== "object") continue;
-    const title = Array.from(clean(typeof d.title === "string" ? d.title : "", 200).replace(/[<>]/g, "")).slice(0, 60).join("").trim();
-    if (!title) continue;
-    out.push({ title, pillar: PILLARS.includes(d.pillar) ? d.pillar : null });
+    out.push({ pillar: PILLARS.includes(d.pillar) ? d.pillar : null });
   }
   return out;
 }
