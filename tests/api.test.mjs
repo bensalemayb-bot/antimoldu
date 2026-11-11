@@ -63,6 +63,8 @@ function redisExec(cmd) {
     case "HKEYS": return [...h.keys()];
     case "SADD": { const s = sets.get(key) || new Set(); const before = s.size; args.forEach((a) => s.add(String(a))); sets.set(key, s); return s.size - before; }
     case "SISMEMBER": return sets.get(key)?.has(String(args[0])) ? 1 : 0;
+    case "SREM": { const s = sets.get(key); return s && s.delete(String(args[0])) ? 1 : 0; }
+    case "SMEMBERS": return [...(sets.get(key) || [])];
     case "RPUSH": { const l = lists.get(key) || []; l.push(...args.map(String)); lists.set(key, l); return l.length; }
     case "LTRIM": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; lists.set(key, l.slice(s, e + 1)); return "OK"; }
     case "LRANGE": { const l = lists.get(key) || []; const n = l.length; let s = Number(args[0]), e = Number(args[1]); if (s < 0) s = Math.max(0, n + s); if (e < 0) e = n + e; return l.slice(s, e + 1); }
@@ -980,4 +982,37 @@ test("rate limit: no storage configured => no limit (app keeps working)", async 
     const r = await call(coach, { body: { lang: "fr", mode: "boost", context: {} } });
     assert.equal(r.status, 200);
   }
+});
+
+// ================= /api/push + rappel =================
+const push = (await import("../api/push.js")).default;
+const remind = await import("../api/remind.js");
+const goodSub = { endpoint: "https://web.push.apple.com/abc123", keys: { p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM", auth: "tBHItJI5svbpez7KI4CCXg" } };
+
+test("push: subscribe stores a clean record, rejects foreign endpoints", async () => {
+  withUpstash();
+  const r = await call(push, { body: { action: "subscribe", id: "u1", sub: goodSub, lang: "en", tz: "Not/AZone", chat: false, progress: { date: "2026-11-11", due: 5, done: 2 } } });
+  assert.equal(r.status, 200);
+  const rec = JSON.parse(strings.get("am:push:u1"));
+  assert.equal(rec.lang, "en");
+  assert.equal(rec.tz, "Europe/Zurich");
+  assert.equal(rec.chat, false);
+  assert.equal(rec.remind, true);
+  assert.deepEqual(rec.progress, { date: "2026-11-11", due: 5, done: 2 });
+  assert.ok(sets.get("am:push:all").has("u1"));
+  const bad = await call(push, { body: { action: "subscribe", id: "u2", sub: { ...goodSub, endpoint: "https://evil.example.com/x" } } });
+  assert.equal(bad.status, 400);
+  const un = await call(push, { body: { action: "unsubscribe", id: "u1" } });
+  assert.equal(un.status, 200);
+  assert.equal(strings.has("am:push:u1"), false);
+});
+
+test("remind: text only when tasks are left, and cron needs the secret", async () => {
+  const today = "2026-11-11";
+  assert.equal(remind.reminderText({ lang: "fr", progress: { date: today, due: 3, done: 3 } }, today), null);
+  assert.equal(remind.reminderText({ lang: "fr", progress: { date: today, due: 0, done: 0 } }, today), null);
+  assert.match(remind.reminderText({ lang: "fr", progress: { date: today, due: 4, done: 1 } }, today).body, /3 tâches/);
+  assert.match(remind.reminderText({ lang: "en", progress: { date: "2026-11-10", due: 4, done: 4 } }, today).body, /Nothing/);
+  const r = await call(remind.default, { method: "GET" });
+  assert.equal(r.status, 401);
 });

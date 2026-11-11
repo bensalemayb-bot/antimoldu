@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0F1318">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Anti-Moldu">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>L'Anti-Moldu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1369,7 +1375,7 @@ function renderKeepFocus(){
   var n = document.getElementById(id);
   if (n){ n.focus(); try { if (s != null) n.setSelectionRange(s, e); } catch(x){} }
 }
-function schedulePush(){ if (!state.group) return; clearTimeout(pushTimer); pushTimer = setTimeout(function(){ pushGroup(ui.tab === "group"); }, 2000); }
+function schedulePush(){ syncPush(); if (!state.group) return; clearTimeout(pushTimer); pushTimer = setTimeout(function(){ pushGroup(ui.tab === "group"); }, 2000); }
 function refreshGroup(skipPush){
   if (!state.group || !state.onboardingDone) return;
   var code = state.group.code;
@@ -1510,6 +1516,97 @@ var inviteCode = (function(){
     return /^[A-Z0-9]{6}$/.test(p) ? p : null;
   } catch(e){ return null; }
 })();
+// Onglet demandé par une notification (?tab=group).
+var openTab = (function(){
+  try {
+    var p = new URLSearchParams(location.search).get("tab");
+    if (!p) return null;
+    history.replaceState(null, "", location.pathname);
+    return TABS.indexOf(p) >= 0 ? p : null;
+  } catch(e){ return null; }
+})();
+
+/* --- Notifications (push) --- */
+var NOTIF_KEY = "am_notif";
+function notifPrefs(){ try { var p = JSON.parse(localStorage.getItem(NOTIF_KEY) || "null"); if (isObj(p)) return { on: p.on === true, chat: p.chat !== false, remind: p.remind !== false }; } catch(e){} return { on:false, chat:true, remind:true }; }
+function setNotifPrefs(p){ try { localStorage.setItem(NOTIF_KEY, JSON.stringify(p)); } catch(e){} }
+var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+var isStandalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+var pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+var swReg = null, syncTimer = null;
+if ("serviceWorker" in navigator){
+  try {
+    navigator.serviceWorker.register("/sw.js").then(function(r){ swReg = r; syncPush(); }, function(){});
+    navigator.serviceWorker.addEventListener("message", function(e){ var d = e.data; if (isObj(d) && d.type === "open" && typeof d.url === "string"){ var m = /tab=(\w+)/.exec(d.url); if (m && TABS.indexOf(m[1]) >= 0 && state.onboardingDone) go(m[1]); } });
+  } catch(e){}
+}
+function b64ToBytes(s){ var p = "=".repeat((4 - s.length % 4) % 4); var raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); var a = new Uint8Array(raw.length); for (var i = 0; i < raw.length; i++) a[i] = raw.charCodeAt(i); return a; }
+function pushBody(sub){
+  var pr = notifPrefs(), p = {done:0, due:0}; try { p = L.todayProgress(state, today()); } catch(e){}
+  var tz = "Europe/Zurich"; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || tz; } catch(e){}
+  return { action:"subscribe", id: state.user.id, sub: sub.toJSON(), lang: lang(), tz: tz, chat: pr.chat, remind: pr.remind, progress: { date: today(), due: p.due, done: p.done } };
+}
+// Renvoie l'abonnement + l'avancement du jour (pour que le rappel du soir sache ce qu'il reste).
+function syncPush(){
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(function(){
+    if (!pushSupported || !swReg || !notifPrefs().on || !state.onboardingDone || Notification.permission !== "granted") return;
+    swReg.pushManager.getSubscription().then(function(sub){ if (sub) api("/api/push", pushBody(sub), 15000); }, function(){});
+  }, 1500);
+}
+function enableNotifs(){
+  ui.notifErr = "";
+  function fail(k){ ui.notifBusy = false; ui.notifErr = t(k); if (ui.tab === "settings") render(); }
+  var asked;
+  try { asked = Notification.requestPermission(); } catch(e){ return fail("notif_error"); }
+  ui.notifBusy = true; render();
+  Promise.resolve(asked).then(function(perm){
+    if (perm !== "granted") return fail("notif_denied");
+    return api("/api/push", null, 15000).then(function(r){
+      if (!r || !r.key) return fail("notif_error");
+      return navigator.serviceWorker.ready.then(function(reg){
+        swReg = reg;
+        return reg.pushManager.getSubscription().then(function(s){ return s || reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: b64ToBytes(r.key) }); });
+      }).then(function(sub){
+        return api("/api/push", pushBody(sub), 15000).then(function(ok){
+          if (!ok) return fail("notif_error");
+          var p = notifPrefs(); p.on = true; setNotifPrefs(p);
+          ui.notifBusy = false; toast("", t("notif_enabled")); if (ui.tab === "settings") render();
+        });
+      });
+    });
+  }).catch(function(){ fail("notif_error"); });
+}
+function disableNotifs(){
+  var p = notifPrefs(); p.on = false; setNotifPrefs(p);
+  api("/api/push", { action:"unsubscribe", id: state.user.id }, 15000);
+  try { if (swReg) swReg.pushManager.getSubscription().then(function(s){ if (s) s.unsubscribe(); }, function(){}); } catch(e){}
+  render();
+}
+function notifSection(){
+  var s = el("section", {class:"sect"}, [el("h2", {text:t("notif_title")})]);
+  if (!pushSupported){
+    s.appendChild(el("p", {class:"small muted", style:"margin-top:6px", text: isIOS && !isStandalone ? t("notif_ios_hint") : t("notif_unsupported")}));
+    return s;
+  }
+  var pr = notifPrefs(), on = pr.on && Notification.permission === "granted";
+  if (!on){
+    s.appendChild(el("p", {class:"small muted", style:"margin:6px 0 12px", text: Notification.permission === "denied" ? t("notif_blocked") : t("notif_pitch")}));
+    s.appendChild(el("button", {class:"btn block primary", disabled: !!ui.notifBusy, text: ui.notifBusy ? t("notif_busy") : t("notif_enable"), onclick: enableNotifs}));
+  } else {
+    [["chat","notif_chat"],["remind","notif_remind"]].forEach(function(o){
+      s.appendChild(el("div", {class:"row", style:"margin-top:12px;align-items:center;justify-content:space-between;gap:12px"}, [
+        el("span", {text:t(o[1])}),
+        el("div", {class:"seg", role:"group", "aria-label":t(o[1])}, [true,false].map(function(v){
+          return el("button", {"aria-pressed": String(pr[o[0]] === v), text: t(v ? "notif_on" : "notif_off"), onclick:function(){ var p = notifPrefs(); p[o[0]] = v; setNotifPrefs(p); render(); syncPush(); }});
+        }))
+      ]));
+    });
+    s.appendChild(el("button", {class:"btn block ghost", style:"margin-top:14px", text:t("notif_disable"), onclick: disableNotifs}));
+  }
+  if (ui.notifErr) s.appendChild(el("p", {class:"err", role:"status", text:ui.notifErr}));
+  return s;
+}
 
 /* --- Group chat --- */
 var gchatDraft = "", gchatTimer = null, gchatTick = 0;
@@ -1710,6 +1807,7 @@ function viewSettings(){
   var box = el("div");
   box.appendChild(el("section", {}, [el("h2", {text:t("settings_lang"), style:"margin-bottom:12px"}), langSeg()]));
   box.appendChild(accountSection());
+  box.appendChild(notifSection());
   var gs = el("section", {class:"sect"}, [el("h2", {text:t("group_title")})]);
   gs.appendChild(groupJoinUI(function(){ render(); }));
   box.appendChild(gs);
@@ -1816,6 +1914,7 @@ function refreshDay(silent){
   }
   render();
   fetchMorning();
+  syncPush();
   if (state.group) refreshGroup();
 }
 document.addEventListener("visibilitychange", function(){ if (document.visibilityState === "visible") refreshDay(); });
@@ -1829,6 +1928,7 @@ if (!L){
 saveLocal();
 if (inviteCode && state.group && state.group.code === inviteCode) inviteCode = null;
 if (inviteCode && state.onboardingDone) ui.tab = "group";
+else if (openTab && state.onboardingDone) ui.tab = openTab;
 if (state.onboardingDone) refreshDay(); else render();
 if (ui.tab === "group"){ fetchGroupChat(); startGroupPolling(); }
 cloudSyncOnBoot();

@@ -3,6 +3,7 @@
 //   Comme pour le classement, les identifiants ne sortent jamais : seul le repère anonyme "pub" est renvoyé.
 import { allowMethods, readBody, sendJson, handleError, queryParam, redis, cleanMultiline, BadRequest, rateLimit } from "./_lib.js";
 import { GROUP_RE, ID_RE, hashKey, pubId } from "./state.js";
+import { notifyGroupChat, pushConfigured } from "./_push.js";
 
 const MAX_TEXT = 500;
 const KEEP = 100;
@@ -57,6 +58,13 @@ async function postChat(req, res) {
   await redis(["RPUSH", key, JSON.stringify({ id, name, text, at: new Date().toISOString() })]);
   await redis(["LTRIM", key, -KEEP, -1]);
   await redis(["EXPIRE", key, TTL_SEC]);
+  // Notifications aux autres membres (sans jamais faire échouer l'envoi du message).
+  if (pushConfigured()) {
+    try {
+      const ids = await redis(["HKEYS", hashKey(group)]);
+      if (Array.isArray(ids)) await notifyGroupChat(group, ids.map(String), id, name, text);
+    } catch { /* message déjà enregistré */ }
+  }
   return sendJson(res, 200, { ok: true });
 }
 
